@@ -1,0 +1,13 @@
+!**/.gitkeep
+
+tmp/
+dist/
+.DS_Store
+
+.local/
+.env
+
+cognito-custom-message-sender-go
+main
+cli
+
