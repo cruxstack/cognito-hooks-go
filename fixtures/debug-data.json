@@ -1,0 +1,29 @@
+[
+  {
+    "version": "1",
+    "triggerSource": "PreSignUp_SignUp",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_example",
+    "callerContext": { "clientId": "local" },
+    "request": { "userAttributes": { "email": "valid@example.com" } },
+    "response": {}
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreSignUp_SignUp",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_example",
+    "callerContext": { "clientId": "local" },
+    "request": { "userAttributes": { "email": "invalid..dots@exa mple.com" } },
+    "response": {}
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreSignUp_ExternalProvider",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_example",
+    "callerContext": { "clientId": "local" },
+    "request": { "userAttributes": { "email": "skip@federated.test" } },
+    "response": {}
+  }
+]

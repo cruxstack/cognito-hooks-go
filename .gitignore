@@ -7,7 +7,6 @@ dist/
 .local/
 .env
 
-cognito-custom-message-sender-go
+cognito-hooks-go
 main
-cli
 
