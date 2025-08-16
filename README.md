@@ -1,7 +1,7 @@
 # Cognito Hooks
 
-An extensible set of AWS Lambda handlers for Amazon Cognito triggers. The
-project is hook-agnostic; **PreSignUp** is implemented first, and the same
+An extensible set of AWS Lambda handlers for [Amazon Cognito triggers](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-working-with-lambda-triggers.html).
+The project is hook-agnostic; **PreSignUp** is implemented first, and the same
 core will be reused for additional hooks over time.
 
 A policy layer (OPA, Rego v1) makes allow/deny decisions and can set Cognito
@@ -13,18 +13,16 @@ real credentials.
 
 * **multi-hook architecture**: common types and helpers live under `internal`;
   each hook has its own handler and a small `cmd/<hook>/main.go`
-* **presignup (implemented)**: clean handling of Cognito PreSignUp events
-* **policy-based decisions (rego v1)**: allow/deny and optionally set
-  `autoConfirmUser`, `autoVerifyEmail`, and `autoVerifyPhone`
+* **policy-based decisions**: custom flows with OPA policies
 * **optional sendgrid verification**: include verdict and score in policy
   input; trusted domains can be allowlisted to bypass checks
 * **local debug mode**: run integration tests against fixture events and
   policies with zero external dependencies
 * **structured logging**: json logs via `slog` with runtime level control
 
-> notes
-> future hooks may be added using the same pattern (e.g., PostConfirmation,
-> PreAuthentication, CustomMessage). timelines are intentionally unspecified.
+> **Notes**: future hooks may be added using the same pattern (e.g.,
+> PostConfirmation, PreAuthentication, CustomMessage). Timelines are
+> intentionally unspecified.
 
 ## Environment Variables
 
@@ -143,19 +141,20 @@ Build a Linux binary and zip it for Lambda.
 ```bash
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
   go build -trimpath -ldflags "-s -w" \
-  -o dist/presignup ./cmd/presignup
+  -o dist/bootstrap ./cmd/presignup
 
-cd dist && zip presignup.zip presignup
+touch dist/policy.rego # edit policy
+cd dist && zip presignup.zip bootstrap
 ```
 
 Create a Lambda function:
 
-* runtime: Go or provided.al2/al2023 (custom) as you prefer
+* runtime: `provided.al2023`
 * architecture: `arm64` (or `x86_64` if you built that)
-* handler: `presignup` (the binary name)
+* handler: `bootstrap` (the binary name)
 * upload `presignup.zip`
 * set environment variables from the table above
-* attach the user pool’s **Pre sign-up** trigger to this function
+* attach the user pool’s **PreSignup** trigger to this function
 
 No special IAM permissions are required unless your VPC settings restrict
 egress to SendGrid.
