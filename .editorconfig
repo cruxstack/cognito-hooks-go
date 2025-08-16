@@ -21,6 +21,3 @@ indent_size = 4
 [**/*.{go,mod,sum}]
 indent_style = tab
 indent_size = unset
-
-[**/*.py]
-indent_size = 4
