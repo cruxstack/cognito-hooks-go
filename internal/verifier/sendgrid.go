@@ -64,13 +64,7 @@ func (v *SendGridEmailVerifier) VerifyEmailViaWhitelist(ctx context.Context, ema
 		return nil, nil
 	}
 
-	return &EmailVerificationResult{
-		Score:        100.0,
-		IsValid:      true,
-		IsDisposable: false,
-		IsRoleBased:  false,
-		Raw:          "{}",
-	}, nil
+	return DefaultValidResult, nil
 }
 
 func (v *SendGridEmailVerifier) VerifyEmailViaAPI(ctx context.Context, email string) (*EmailVerificationResult, error) {

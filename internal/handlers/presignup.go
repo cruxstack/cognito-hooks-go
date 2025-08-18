@@ -81,11 +81,13 @@ func (h *PreSignupHandler) VerifyEmail(ctx context.Context, evt *events.CognitoE
 	var verificationData *verifier.EmailVerificationResult
 
 	if !h.Config.EmailVerificationEnabled {
-		return nil // skip verification when disabled
+		// return perfect result if verification when disabled
+		return verifier.DefaultValidResult
 	}
 
 	if !slices.Contains(*h.Config.EmailVerificationForTriggerSources, evt.TriggerSource) {
-		return nil // skip verifiction if source not in list
+		// return perfect result if trigger is not in list
+		return verifier.DefaultValidResult
 	}
 
 	email := evt.Request.UserAttributes["email"]
