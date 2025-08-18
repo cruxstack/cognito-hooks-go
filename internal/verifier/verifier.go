@@ -10,6 +10,14 @@ type EmailVerificationResult struct {
 	Raw          string  `json:"raw"`
 }
 
+var DefaultValidResult = &EmailVerificationResult{
+	Score:        100.0,
+	IsValid:      true,
+	IsDisposable: false,
+	IsRoleBased:  false,
+	Raw:          "{}",
+}
+
 type EmailVerifier interface {
 	VerifyEmail(ctx context.Context, email string) (*EmailVerificationResult, error)
 }
