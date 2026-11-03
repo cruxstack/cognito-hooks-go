@@ -1,7 +1,8 @@
 // Package postconfirmation implements the PostConfirmation hook. It replaces
-// the password of each newly confirmed native user with a random one that
-// nobody knows, so the user can only sign in with passwordless factors such
-// as email or SMS one-time passwords and passkeys.
+// the password of each native user who confirms their sign-up or resets
+// their password with a random one that nobody knows, so the user can only
+// sign in with passwordless factors such as email or SMS one-time passwords
+// and passkeys.
 package postconfirmation
 
 import (
@@ -29,10 +30,10 @@ const TriggerPrefix = "PostConfirmation_"
 
 // Trigger sources sent to the PostConfirmation trigger.
 const (
-	// TriggerConfirmSignUp follows ConfirmSignUp and AdminConfirmSignUp, and
-	// a federated user's first sign-in.
+	// TriggerConfirmSignUp follows ConfirmSignUp and AdminConfirmSignUp.
+	// Cognito doesn't send it for users created with AdminCreateUser.
 	TriggerConfirmSignUp = "PostConfirmation_ConfirmSignUp"
-	// TriggerConfirmForgotPassword follows a forgotten-password reset.
+	// TriggerConfirmForgotPassword follows ConfirmForgotPassword.
 	TriggerConfirmForgotPassword = "PostConfirmation_ConfirmForgotPassword"
 )
 

@@ -1,6 +1,7 @@
 # build output
 dist/
 coverage.out
+/bootstrap
 /cognito-hooks-go
 /devtool
 

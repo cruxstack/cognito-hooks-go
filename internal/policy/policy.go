@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/open-policy-agent/opa/v1/ast"
 	"github.com/open-policy-agent/opa/v1/rego"
@@ -34,8 +35,9 @@ func Load(ctx context.Context, path, query string) (*Engine, error) {
 	return e, nil
 }
 
-// Compile compiles query against the policy source, which must be Rego v1.
-// name is used in error messages.
+// Compile compiles query against the policy source, which must be Rego v1
+// and define the rule query refers to, such as data.example.result. name is
+// used in error messages.
 func Compile(ctx context.Context, name, src, query string) (*Engine, error) {
 	pq, err := rego.New(
 		rego.Query(query),
@@ -45,7 +47,38 @@ func Compile(ctx context.Context, name, src, query string) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile policy: %w", err)
 	}
+
+	// a query for a rule the policy doesn't define compiles, but is undefined
+	// for every input, so a misspelled package or rule name would fail every
+	// event instead of the startup
+	if err := checkDefines(name, src, query); err != nil {
+		return nil, err
+	}
 	return &Engine{query: pq}, nil
+}
+
+func checkDefines(name, src, query string) error {
+	ref, err := ast.ParseRef(query)
+	if err != nil {
+		return fmt.Errorf("parse query %q: %w", query, err)
+	}
+	mod, err := ast.ParseModuleWithOpts(name, src, ast.ParserOptions{RegoVersion: ast.RegoV1})
+	if err != nil {
+		return fmt.Errorf("compile policy: %w", err)
+	}
+	for _, r := range mod.Rules {
+		path := r.Ref()
+		if !path.HasPrefix(ast.DefaultRootRef) {
+			path = mod.Package.Path.Extend(path)
+		}
+		// "result.action := ..." defines result too
+		if path.HasPrefix(ref) {
+			return nil
+		}
+	}
+	pkg, rule := ref[:len(ref)-1], ref[len(ref)-1:]
+	return fmt.Errorf("policy does not define %s: it must be in package %s and define a %s rule",
+		ref, strings.TrimPrefix(pkg.String(), "data."), rule.String())
 }
 
 // Eval evaluates the policy against input and decodes the result into T. It

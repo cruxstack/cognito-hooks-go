@@ -31,8 +31,8 @@ func TestPreSignUp_AllowSetsResponseFlags(t *testing.T) {
 
 	resp := e.mustHandle(preSignUpEvent("PreSignUp_SignUp", "9test8client7id6example", "e2e+1@example.com"))
 	r, _ := resp["response"].(map[string]any)
-	if r["autoConfirmUser"] != true || r["autoVerifyEmail"] != true || r["autoVerifyPhone"] != false {
-		t.Errorf("response = %v, want autoConfirmUser and autoVerifyEmail", r)
+	if r["autoConfirmUser"] != true || r["autoVerifyEmail"] != false || r["autoVerifyPhone"] != false {
+		t.Errorf("response = %v, want only autoConfirmUser", r)
 	}
 	if resp["triggerSource"] != "PreSignUp_SignUp" || resp["userName"] != "8a1b2c3d-0000-4000-8000-000000000001" {
 		t.Errorf("response event = %v, want the request event with the response set", resp)
@@ -125,8 +125,10 @@ func TestPreSignUp_VerificationUnavailable(t *testing.T) {
 
 func TestPreSignUp_InvalidPolicyFailsAtStartup(t *testing.T) {
 	tests := map[string]string{
-		"syntax error": "package cognito_hook_presignup\n\nresult := {\n",
-		"rego v0":      "package cognito_hook_presignup\n\nresult = {\"action\": \"allow\"} { true }\n",
+		"syntax error":       "package cognito_hook_presignup\n\nresult := {\n",
+		"rego v0":            "package cognito_hook_presignup\n\nresult = {\"action\": \"allow\"} { true }\n",
+		"misspelled package": "package cognito_hooks_presignup\n\nresult := {\"action\": \"allow\"}\n",
+		"misspelled rule":    "package cognito_hook_presignup\n\nresults := {\"action\": \"allow\"}\n",
 	}
 	for name, src := range tests {
 		t.Run(name, func(t *testing.T) {

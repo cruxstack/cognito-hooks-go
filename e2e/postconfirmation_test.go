@@ -1,9 +1,16 @@
 package e2e
 
 import (
+	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+
+	"github.com/cruxstack/cognito-hooks-go/internal/app"
+	"github.com/cruxstack/cognito-hooks-go/internal/config"
 )
 
 func TestPostConfirmation_ScramblesNativeUsers(t *testing.T) {
@@ -51,6 +58,25 @@ func TestPostConfirmation_BrokenPolicyStillScrambles(t *testing.T) {
 	e.mustHandle(postConfirmationEvent("PostConfirmation_ConfirmSignUp", "1example23456789", "CONFIRMED"))
 	if got := len(e.cognito.scrambled()); got != 1 {
 		t.Errorf("scrambled %d users, want 1", got)
+	}
+}
+
+// A policy that skips nobody because of a misspelled package would be easy to
+// miss, so it stops the function from starting.
+func TestPostConfirmation_MisspelledPolicyFailsAtStartup(t *testing.T) {
+	cfg, err := config.Load(func(k string) (string, bool) {
+		v, ok := map[string]string{
+			"APP_POSTCONFIRMATION_ENABLED":     "true",
+			"APP_POSTCONFIRMATION_POLICY_PATH": writePolicy(t, "package cognito_hook_post_confirmation\n\nresult := {\"action\": \"skip\"}\n"),
+		}[k]
+		return v, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.New(context.Background(), cfg, aws.Config{}, app.WithCognitoClient(&fakeCognito{})); err == nil ||
+		!strings.Contains(err.Error(), "does not define data.cognito_hook_postconfirmation.result") {
+		t.Errorf("app.New() = %v, want an error naming the missing rule", err)
 	}
 }
 

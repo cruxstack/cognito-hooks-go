@@ -32,7 +32,7 @@ Used by the PreSignUp hook, and only checked when it is enabled. See
 | `APP_EMAIL_VERIFICATION_ENABLED`             | Verify the user's address with SendGrid before the policy runs.             | `false`                    |
 | `APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES` | PreSignUp trigger sources to verify for.                                    | `PreSignUp_SignUp`         |
 | `APP_EMAIL_VERIFICATION_ALLOWLIST`           | Domains treated as valid without calling SendGrid (exact, case-insensitive match). | unset               |
-| `APP_SENDGRID_API_HOST`                      | SendGrid API host. EU accounts use `https://api.eu.sendgrid.com`.           | `https://api.sendgrid.com` |
+| `APP_SENDGRID_API_HOST`                      | SendGrid API host, an `https` URL. EU accounts use `https://api.eu.sendgrid.com`. | `https://api.sendgrid.com` |
 | `APP_SENDGRID_EMAIL_VERIFICATION_API_KEY`    | API key with Email Address Validation access.                               | required when enabled      |
 
 Lambda environment variables are visible to anyone who can read the
@@ -87,3 +87,6 @@ pool's ARN as the source ARN.
   `trigger`, `user_pool_id`, and `client_id`. PreSignUp records add the
   user's masked `email` (`e***@example.com`), and PostConfirmation records
   add the user's `sub`.
+- **Alarms:** see monitoring for [PreSignUp](presignup.md#failure-handling)
+  and [PostConfirmation](postconfirmation.md#monitoring). A PreSignUp denial
+  is a function error, so the two hooks need different alarms.

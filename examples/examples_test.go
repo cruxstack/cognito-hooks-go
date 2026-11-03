@@ -82,7 +82,7 @@ var preSignUpTests = map[string][]string{
 	// admin-created user, federated user, test client sign-up
 	"allow.rego":        {"allow", "allow", "allow", "allow", "allow"},
 	"domains.rego":      {"allow", "deny", "allow", "allow", "allow"},
-	"auto-confirm.rego": {"allow", "allow", "allow", "allow", "allow:autoConfirmUser,autoVerifyEmail"},
+	"auto-confirm.rego": {"allow", "allow", "allow", "allow", "allow:autoConfirmUser"},
 	// without verification results, every sign-up is allowed
 	"verification.rego": {"allow", "allow", "allow", "allow", "allow"},
 }

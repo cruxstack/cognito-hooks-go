@@ -68,6 +68,39 @@ func TestEval_ResultOfWrongShapeIsAnError(t *testing.T) {
 	}
 }
 
+// A misspelled package or rule name must fail at startup, not on every
+// event.
+func TestCompile_RequiresTheQueriedRule(t *testing.T) {
+	tests := map[string]string{
+		"wrong package": "package examples\n\nresult := {\"admin\": true}\n",
+		"wrong rule":    "package example\n\nresults := {\"admin\": true}\n",
+		"no rules":      "package example\n",
+	}
+	for name, src := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := Compile(context.Background(), "p.rego", src, query)
+			if err == nil || !strings.Contains(err.Error(), "policy does not define data.example.result") {
+				t.Errorf("err = %v, want an error naming the missing rule", err)
+			}
+		})
+	}
+
+	ok := map[string]string{
+		"default only": "package example\n\ndefault result := {}\n",
+		"ref head":     "package example\n\nresult.admin := true\n",
+	}
+	for name, src := range ok {
+		e, err := Compile(context.Background(), "p.rego", src, query)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if _, err := Eval[result](context.Background(), e, nil); err != nil {
+			t.Errorf("%s: Eval() = %v", name, err)
+		}
+	}
+}
+
 func TestCompile_RequiresRegoV1(t *testing.T) {
 	// rego v0: rule bodies without "if"
 	_, err := Compile(context.Background(), "v0.rego", "package example\n\nresult { true }\n", query)

@@ -50,7 +50,7 @@ func TestEval(t *testing.T) {
 		},
 		"presignup flags": {
 			args: []string{"-presignup-policy", examples + "policies/presignup/auto-confirm.rego", "-events", examples + "events/presignup.json"},
-			want: []string{"allow", "allow", "allow", "allow", "allow: autoConfirmUser, autoVerifyEmail"},
+			want: []string{"allow", "allow", "allow", "allow", "allow: autoConfirmUser"},
 		},
 		"verdict applies to the verified triggers only": {
 			args: []string{"-presignup-policy", examples + "policies/presignup/verification.rego", "-verdict", "invalid", "-events", examples + "events/presignup.json"},

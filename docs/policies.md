@@ -16,8 +16,10 @@ policies to start from.
 
 - Policies must use Rego v1 syntax (`if` and `contains` keywords).
   `import rego.v1` is optional.
-- Policies are compiled when the function starts, so a syntax error stops the
-  function from starting instead of failing a user's sign-up.
+- Policies are compiled when the function starts, so a syntax error, or a
+  policy that doesn't define `result` in its package (such as a misspelled
+  package name), stops the function from starting instead of failing a
+  user's sign-up.
 - Start the file with its `package` line. The
   [Terraform module](https://github.com/cruxstack/terraform-aws-cognito-hooks)
   checks that the policy content starts with it.

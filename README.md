@@ -15,7 +15,7 @@ module.
 | Hook                                       | What it does                                                                                       |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
 | [PreSignUp](docs/presignup.md)             | Allows or denies each sign-up and sets Cognito's auto-confirm and auto-verify flags. Can check the address with SendGrid first. |
-| [PostConfirmation](docs/postconfirmation.md) | Replaces each newly confirmed user's password with a random one, for passwordless-only user pools. |
+| [PostConfirmation](docs/postconfirmation.md) | Replaces the password of each user who confirms their sign-up or resets their password with a random one, for passwordless-only user pools. |
 
 One binary serves every hook; each function enables the hooks it handles.
 

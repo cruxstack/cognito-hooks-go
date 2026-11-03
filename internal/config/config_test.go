@@ -113,7 +113,7 @@ func TestLoad_Errors(t *testing.T) {
 			want: []string{
 				`APP_LOG_LEVEL: "verbose" must be one of`,
 				`APP_PRESIGNUP_ENABLED: "yes" is not a boolean`,
-				`APP_SENDGRID_API_HOST: "api.sendgrid.com" must be a URL`,
+				`APP_SENDGRID_API_HOST: "api.sendgrid.com" must be an https URL`,
 			},
 		},
 		"verification without a key or with unknown triggers": {
@@ -156,6 +156,25 @@ func TestLoad_Errors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSecureURL(t *testing.T) {
+	for in, want := range map[string]bool{
+		"https://api.sendgrid.com":    true,
+		"https://api.eu.sendgrid.com": true,
+		"http://127.0.0.1:8080":       true,
+		"http://localhost:8080":       true,
+		"http://[::1]:8080":           true,
+		"http://api.sendgrid.com":     false,
+		"http://10.0.0.1":             false,
+		"api.sendgrid.com":            false,
+		"https://":                    false,
+		"ftp://api.sendgrid.com":      false,
+	} {
+		if got := secureURL(in); got != want {
+			t.Errorf("secureURL(%q) = %v, want %v", in, got, want)
+		}
 	}
 }
 

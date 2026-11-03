@@ -76,10 +76,17 @@ To allow the sign-up:
 }
 ```
 
-Cognito rejects the sign-up if a flag asks it to verify an attribute the
-user doesn't have, such as `autoVerifyEmail` without an `email` attribute.
-Only auto-verify addresses you trust: a verified address receives password
-reset and sign-in codes.
+What Cognito does with the flags:
+
+- It ignores them for `PreSignUp_AdminCreateUser`.
+- It rejects the sign-up if a flag asks it to verify an attribute the user
+  doesn't have, such as `autoVerifyEmail` without an `email` attribute.
+- Auto-verifying skips the proof that the user owns the address or phone
+  number. When `email` (or `phone_number`) is a sign-in alias and another
+  user already has it, Cognito moves the alias to the new user and marks the
+  other user's address unverified. Only auto-verify what something else has
+  proved, and don't decide on `callerContext.clientId` alone: an app client
+  ID isn't a secret unless the client has a client secret.
 
 To deny it:
 
@@ -103,7 +110,13 @@ rejected.
 | The policy denies the sign-up                                 | rejected with the policy's reason                   |
 | The policy fails, has no result, or returns an unknown action | rejected with `the sign-up policy failed`; logged   |
 | SendGrid is unavailable or returns an error                   | logged; the policy runs without `emailVerification` |
-| The policy doesn't compile                                    | the function doesn't start                          |
+| The policy doesn't compile or define its `result` rule        | the function doesn't start                          |
+
+A denial is returned to Cognito as an error, so the function's `Errors`
+metric counts every denied sign-up. To alarm on failures rather than
+denials, use CloudWatch Logs metric filters on the function's log group for
+`{ $.msg = "sign-up rejected because the policy failed" }` and
+`{ $.msg = "startup failed" }`.
 
 ## Email verification
 
@@ -134,7 +147,7 @@ when SendGrid is unavailable.
 | ------------------------------------------------------------------------------ | ------------------------------------------------------------- |
 | [`allow.rego`](../examples/policies/presignup/allow.rego)                      | Allowing every sign-up: the smallest valid policy.            |
 | [`domains.rego`](../examples/policies/presignup/domains.rego)                  | Limiting self sign-up to some email domains.                  |
-| [`auto-confirm.rego`](../examples/policies/presignup/auto-confirm.rego)        | Auto-confirming a test app client's sign-ups.                 |
+| [`auto-confirm.rego`](../examples/policies/presignup/auto-confirm.rego)        | Auto-confirming a test app client's sign-ups, and the risks.  |
 | [`verification.rego`](../examples/policies/presignup/verification.rego)        | Denying undeliverable and disposable addresses.               |
 
 See [policies](policies.md) for writing and testing policies.

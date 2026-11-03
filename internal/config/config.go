@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -138,11 +140,30 @@ func (c *Config) validate() []error {
 		}
 	}
 
-	if !strings.HasPrefix(c.SendGrid.APIHost, "https://") && !strings.HasPrefix(c.SendGrid.APIHost, "http://") {
-		errs = append(errs, fmt.Errorf("APP_SENDGRID_API_HOST: %q must be a URL such as %s", c.SendGrid.APIHost, sendgrid.DefaultBaseURL))
+	if !secureURL(c.SendGrid.APIHost) {
+		errs = append(errs, fmt.Errorf("APP_SENDGRID_API_HOST: %q must be an https URL such as %s", c.SendGrid.APIHost, sendgrid.DefaultBaseURL))
 	}
 
 	return errs
+}
+
+// secureURL reports whether s is an https URL, or an http URL for a loopback
+// host such as a local test server. The API key is sent with every request,
+// so it must not cross a network in plaintext.
+func secureURL(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		host := u.Hostname()
+		ip := net.ParseIP(host)
+		return host == "localhost" || (ip != nil && ip.IsLoopback())
+	}
+	return false
 }
 
 // reader parses environment variables and collects errors.

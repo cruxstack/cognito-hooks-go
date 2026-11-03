@@ -59,7 +59,9 @@ and [PostConfirmation](postconfirmation.md#failure-handling).
 - **Configuration fails fast.** Invalid values and removed variables stop
   the function at startup, where a deployment check notices, instead of
   changing behavior on a user's sign-up.
-- **Policies are compiled once,** at startup, and evaluated per event.
+- **Policies are compiled once,** at startup, and evaluated per event. A
+  policy must define the rule its hook queries, so a misspelled package or
+  rule name fails at startup rather than on every event.
 - **Error messages are for users.** Cognito shows a PreSignUp error message
   to the user, so the hook returns the policy's reason or a generic message,
   and logs the details.

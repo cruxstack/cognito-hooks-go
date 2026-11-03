@@ -20,8 +20,7 @@ Upgrade checklist:
 - **One binary for every hook.** Build `bootstrap` from the repository root
   (`go build -tags lambda.norpc -o bootstrap .`) or download
   `bootstrap_linux_arm64.zip` or `bootstrap_linux_amd64.zip` from the
-  release. `cmd/presignup`, `cmd/postconfirmation`, and `cmd/debug` were
-  removed.
+  release. `cmd/presignup` and `cmd/debug` were removed.
 - **Go 1.27.3 or later** is required to build.
 
 ## Configuration
@@ -32,8 +31,7 @@ the error.
 
 | v0                                   | v1                                                                        |
 | ------------------------------------ | ------------------------------------------------------------------------- |
-| `APP_POLICY_PATH` for PreSignUp      | `APP_PRESIGNUP_ENABLED=true` and `APP_PRESIGNUP_POLICY_PATH`              |
-| `APP_POLICY_PATH` for PostConfirmation | `APP_POSTCONFIRMATION_ENABLED=true` and, optionally, `APP_POSTCONFIRMATION_POLICY_PATH` |
+| `APP_POLICY_PATH`                    | `APP_PRESIGNUP_ENABLED=true` and `APP_PRESIGNUP_POLICY_PATH`              |
 | `APP_DEBUG_ENABLED`                  | removed: use `APP_LOG_LEVEL=debug`, and `devtool` locally                 |
 | `APP_DEBUG_DATA_PATH`                | removed: use `devtool run -events`                                        |
 | `APP_EMAIL_VERIFICATION_WHITELIST`   | `APP_EMAIL_VERIFICATION_ALLOWLIST`                                        |
@@ -55,9 +53,8 @@ Other changes:
 
 ## Policy changes
 
-The policy packages (`cognito_hook_presignup` and
-`cognito_hook_postconfirmation`), the `result` rule, and the result shapes
-are unchanged.
+The PreSignUp policy's package (`cognito_hook_presignup`), its `result`
+rule, and the result shape are unchanged.
 
 - **A failed PreSignUp policy rejects the sign-up.** v0 allowed the sign-up
   when the policy failed to evaluate or had no result. v1 rejects it with
@@ -91,8 +88,11 @@ are unchanged.
 - **Events for a hook that isn't enabled are errors.** A function only
   handles the hooks enabled in its configuration.
 - **Policies are compiled once at startup.** v0 compiled the PreSignUp
-  policy for every event. A policy with a syntax error now stops the function
-  from starting.
+  policy for every event. A policy with a syntax error, or one that doesn't
+  define `result` in its package (for example a misspelled package name),
+  now stops the function from starting.
+- **`APP_SENDGRID_API_HOST` must be an `https` URL.** The API key is sent
+  with every request.
 - **SendGrid requests time out after 3 seconds,** so a slow response can't
   use up Cognito's 5 second limit. v0 had no timeout.
 - **The SendGrid request body is JSON-encoded.** v0 inserted the address

@@ -2,12 +2,13 @@
 
 Cognito invokes the
 [PostConfirmation trigger](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-lambda-post-confirmation.html)
-after it confirms a user. This hook replaces the user's password with a
-random 128-character password that is never logged or returned. Nobody,
-including the user, knows it, so the user can only sign in with passwordless
-factors, such as email or SMS one-time passwords and passkeys. Stolen or
-guessed passwords stop working, and because the user now has a password,
-`ChangePassword` requires a previous password they don't know.
+after a user confirms their sign-up or resets a forgotten password. This hook
+replaces the user's password with a random 128-character password that is
+never logged or returned. Nobody, including the user, knows it, so the user
+can only sign in with passwordless factors, such as email or SMS one-time
+passwords and passkeys. Stolen or guessed passwords stop working, and
+because the user now has a password, `ChangePassword` requires a previous
+password they don't know.
 
 Enable it with `APP_POSTCONFIRMATION_ENABLED=true`. A policy is optional.
 
@@ -24,17 +25,33 @@ Enable it with `APP_POSTCONFIRMATION_ENABLED=true`. A policy is optional.
   characters (a policy's minimum length is at most 99) and always includes
   lowercase and uppercase letters, digits, and symbols.
 
-## Triggers
+## When it runs
 
-| Trigger source                           | Sent when                                                         |
-| ---------------------------------------- | ----------------------------------------------------------------- |
-| `PostConfirmation_ConfirmSignUp`         | After `ConfirmSignUp` or `AdminConfirmSignUp`, and a federated user's first sign-in. |
-| `PostConfirmation_ConfirmForgotPassword` | After a forgotten-password reset, so the password the user just chose is replaced too. |
+| Trigger source                           | Sent after                                                         |
+| ---------------------------------------- | ------------------------------------------------------------------ |
+| `PostConfirmation_ConfirmSignUp`         | `ConfirmSignUp` or `AdminConfirmSignUp`, or a sign-up confirmed in managed login. |
+| `PostConfirmation_ConfirmForgotPassword` | `ConfirmForgotPassword`, so the password the user just chose is replaced too. |
+
+The hook only sees the users Cognito sends it, so some users keep a password
+they know:
+
+- **Users created with `AdminCreateUser`.** Cognito doesn't invoke the
+  trigger for them, so they keep the password they choose at their first
+  sign-in.
+- **Users that a PreSignUp trigger auto-confirms** (`autoConfirmUser`), and
+  **federated users.** AWS doesn't document whether the trigger runs for
+  them; check in a test user pool if you rely on it. The hook skips users
+  whose `cognito:user_status` is `EXTERNAL_PROVIDER`, because they have no
+  Cognito password.
+
+If no user may sign in with a password, also leave `PASSWORD` out of the
+user pool's allowed first factors. The hook is then defense in depth for
+the users above and for app clients that still allow password flows.
 
 ## How it works
 
 1. Federated users (`cognito:user_status` of `EXTERNAL_PROVIDER`) are
-   skipped. They have no Cognito password.
+   skipped.
 2. If there is a policy, it can skip the user. Without one, every native
    user's password is scrambled.
 3. The hook calls `AdminSetUserPassword` with `Permanent: true` and a random
@@ -93,11 +110,20 @@ anything. When the hook can't make a decision, it scrambles the password.
 | The policy skips the user                                     | skipped; logged with the policy's reason           |
 | The policy fails, has no result, or returns an unknown action | scrambled; the policy error is logged              |
 | `AdminSetUserPassword` fails                                  | logged as `password scramble failed`; success      |
-| The policy doesn't compile                                    | the function doesn't start                         |
+| The policy doesn't compile or define its `result` rule        | the function doesn't start                         |
 
-A failed scramble leaves the user's own password in place. Alarm on it with
-a CloudWatch Logs metric filter on the function's log group:
+## Monitoring
 
-```text
-{ $.msg = "password scramble failed" }
-```
+Each of these leaves a confirmed user with the password they chose, so
+alarm on both:
+
+- **The function's `Errors` metric.** The function returns an error, and
+  Cognito still confirms the user, when it can't start (an invalid setting
+  or policy logs `startup failed`), when the PostConfirmation hook isn't
+  enabled on it, or when the event can't be decoded.
+- **Failed scrambles,** which return success. Use a CloudWatch Logs metric
+  filter on the function's log group:
+
+  ```text
+  { $.msg = "password scramble failed" }
+  ```
