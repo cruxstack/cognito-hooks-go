@@ -1,0 +1,120 @@
+[
+  {
+    "version": "1",
+    "triggerSource": "PreSignUp_SignUp",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "8a1b2c3d-0000-4000-8000-000000000001",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "1example23456789"
+    },
+    "request": {
+      "userAttributes": {
+        "email": "emma@example.com"
+      },
+      "validationData": {},
+      "clientMetadata": {
+        "locale": "en"
+      }
+    },
+    "response": {
+      "autoConfirmUser": false,
+      "autoVerifyEmail": false,
+      "autoVerifyPhone": false
+    }
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreSignUp_SignUp",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "8a1b2c3d-0000-4000-8000-000000000002",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "1example23456789"
+    },
+    "request": {
+      "userAttributes": {
+        "email": "mallory@mailinator.test"
+      },
+      "validationData": {},
+      "clientMetadata": {}
+    },
+    "response": {
+      "autoConfirmUser": false,
+      "autoVerifyEmail": false,
+      "autoVerifyPhone": false
+    }
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreSignUp_AdminCreateUser",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "8a1b2c3d-0000-4000-8000-000000000003",
+    "callerContext": {
+      "awsSdkVersion": "aws-cli/2.17.0",
+      "clientId": "CLIENT_ID_NOT_APPLICABLE"
+    },
+    "request": {
+      "userAttributes": {
+        "email": "noah@partner.test"
+      },
+      "validationData": {},
+      "clientMetadata": {}
+    },
+    "response": {
+      "autoConfirmUser": false,
+      "autoVerifyEmail": false,
+      "autoVerifyPhone": false
+    }
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreSignUp_ExternalProvider",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "google_104536843271940000001",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "1example23456789"
+    },
+    "request": {
+      "userAttributes": {
+        "email": "olivia@gmail.test",
+        "email_verified": "true"
+      },
+      "validationData": {},
+      "clientMetadata": {}
+    },
+    "response": {
+      "autoConfirmUser": false,
+      "autoVerifyEmail": false,
+      "autoVerifyPhone": false
+    }
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreSignUp_SignUp",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "8a1b2c3d-0000-4000-8000-000000000005",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "9test8client7id6example"
+    },
+    "request": {
+      "userAttributes": {
+        "email": "e2e+1@example.com"
+      },
+      "validationData": {},
+      "clientMetadata": {}
+    },
+    "response": {
+      "autoConfirmUser": false,
+      "autoVerifyEmail": false,
+      "autoVerifyPhone": false
+    }
+  }
+]

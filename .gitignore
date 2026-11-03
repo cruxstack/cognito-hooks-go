@@ -1,12 +1,16 @@
-!**/.gitkeep
-
-tmp/
+# build output
 dist/
-.DS_Store
+coverage.out
+/bootstrap
+/cognito-hooks-go
+/devtool
 
-.local/
+# local settings
 .env
+.local/
+tmp/
 
-cognito-hooks-go
-main
+# worktrees
+.worktrees/
 
+.DS_Store
