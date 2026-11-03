@@ -1,16 +1,16 @@
 # Policies
 
-Each hook's decision is made by a
+Each hook's decisions are made by a
 [Rego](https://www.openpolicyagent.org/docs/policy-language) policy that you
 write. The policy receives the Cognito event as `input` and defines a
-`result` rule.
+`result` rule with the [actions](#actions) the hook should take.
 
 | Hook                                  | Policy setting                     | Package                          | Required |
 | ------------------------------------- | ---------------------------------- | -------------------------------- | -------- |
 | [PreSignUp](presignup.md)             | `APP_PRESIGNUP_POLICY_PATH`        | `cognito_hook_presignup`         | yes      |
 | [PostConfirmation](postconfirmation.md) | `APP_POSTCONFIRMATION_POLICY_PATH` | `cognito_hook_postconfirmation` | no       |
 
-The hook pages describe each input and result. The
+The hook pages describe each input and the actions each hook accepts. The
 [`examples/policies`](../examples/policies) directory has complete, tested
 policies to start from.
 
@@ -24,31 +24,78 @@ policies to start from.
   [Terraform module](https://github.com/cruxstack/terraform-aws-cognito-hooks)
   checks that the policy content starts with it.
 
+## Actions
+
+A policy's result is a list of actions:
+
+```jsonc
+{
+  "actions": [
+    "signup.allow",                                   // a name
+    { "action": "signup.deny", "reason": "..." }      // or an object with parameters
+  ]
+}
+```
+
+- **Names are `<resource>.<verb>`,** such as `signup.allow`, `user.confirm`,
+  or `password.replace`, and are case-insensitive. Each hook's page lists
+  the actions it accepts.
+- **When actions conflict, the more restrictive one wins:** `signup.deny`
+  over `signup.allow`, and `password.replace` over `password.skip`.
+- **The hook decides the order** in which actions run, so the order of the
+  list doesn't matter.
+- **Unknown actions and parameters make the result invalid,** including
+  another hook's actions and misspelled parameters. An invalid result is
+  handled like a failed policy: the sign-up is rejected, or the
+  PostConfirmation hook applies its default actions.
+
+New actions are added as new names, so a policy written today keeps working
+when a hook learns more actions.
+
+Build the list with `contains` rules. Each rule adds actions independently,
+so rules can't conflict with each other:
+
+```rego
+package cognito_hook_presignup
+
+import rego.v1
+
+result := {"actions": actions}
+
+actions contains "signup.allow"
+
+actions contains {"action": "signup.deny", "reason": "Disposable addresses can't be used."} if {
+	input.emailVerification.disposable == true
+}
+
+actions contains {"action": "signup.deny", "reason": "Sign-up is closed for this app."} if {
+	input.callerContext.clientId == "1example23456789"
+}
+```
+
 ## Writing robust policies
 
 - **Always define a result.** An undefined result is an error, which
-  rejects a sign-up or, for PostConfirmation, scrambles the password. Use a
-  `default` value, or an `else` chain that ends in an unconditional value:
+  rejects a sign-up or, for PostConfirmation, applies the default actions.
+  `result := {"actions": actions}` is always defined, even when no
+  `actions` rule matches.
 
-  ```rego
-  default result := {"action": "allow"}
-  ```
-
-- **Don't define one rule twice with different values.** Two `result` rules
-  that both match with different values are an evaluation error. Chain them
-  with `else`, which picks the first match:
-
-  ```rego
-  result := deny("undeliverable address") if {
-  	input.emailVerification.valid == false
-  } else := {"action": "allow"}
-  ```
+- **Define `result` once.** Two `result` rules that both match with
+  different values are an evaluation error. Add to `actions` with
+  `contains` rules instead.
 
 - **Decide what a missing value means.** `not
   input.emailVerification.valid` is true when verification didn't run or
   SendGrid was unavailable, which would deny every sign-up during a SendGrid
   outage. `input.emailVerification.valid == false` only matches a real
   verdict.
+
+- **Negate a named rule, not an expression on a value that may be
+  missing.** `not email_domain in allowed_domains` doesn't match when the
+  user has no email, so that sign-up isn't denied. Name the condition and
+  negate it: `allowed_email if email_domain in allowed_domains`, then `not
+  allowed_email`. See
+  [`domains.rego`](../examples/policies/presignup/domains.rego).
 
 - **Don't name policy rules `test_*`.** `opa test` runs every rule with that
   prefix as a test, including rules in the policy itself.
@@ -67,9 +114,10 @@ go run ./cmd/devtool eval \
   -events examples/events/presignup.json
 ```
 
-Each event prints its decision and the outcome (`allow`, `deny: <reason>`,
-`scramble`, `skip: <reason>`, or the error). The command fails if any event
-does. Useful flags:
+Each event prints the policy's actions, the resolved decision, and the
+outcome, such as `signup.allow, user.confirm`, `signup.deny: <reason>`,
+`password.replace`, `password.skip: <reason>`, or the error. The command
+fails if any event does. Useful flags:
 
 | Flag                       | Effect                                                                         |
 | -------------------------- | ------------------------------------------------------------------------------ |

@@ -53,15 +53,34 @@ Other changes:
 
 ## Policy changes
 
-The PreSignUp policy's package (`cognito_hook_presignup`), its `result`
-rule, and the result shape are unchanged.
+The PreSignUp policy's package (`cognito_hook_presignup`) and its `result`
+rule are unchanged; the result is now a list of
+[actions](policies.md#actions), so hooks can gain actions without breaking
+policies.
 
+- **The result is `{"actions": [...]}`.** A v0 result fails with an error
+  that points here. Convert it like this:
+
+  | v0 result                                                   | v1 actions                                          |
+  | ----------------------------------------------------------- | --------------------------------------------------- |
+  | `{"action": "allow"}`                                       | `["signup.allow"]`                                  |
+  | `{"action": "allow", "response": {"autoConfirmUser": true}}` | `["signup.allow", "user.confirm"]`                  |
+  | `"autoVerifyEmail": true`, `"autoVerifyPhone": true`        | `"email.verify"`, `"phone.verify"`                  |
+  | `{"action": "deny", "reason": "..."}`                       | `[{"action": "signup.deny", "reason": "..."}]`      |
+
+  ```diff
+  -result := {"action": "allow", "response": {"autoConfirmUser": true}}
+  +result := {"actions": ["signup.allow", "user.confirm"]}
+  ```
+
+  A denial wins over an allow, so an `else` chain of results can become
+  `actions contains` rules (see [policies](policies.md#actions)).
 - **A failed PreSignUp policy rejects the sign-up.** v0 allowed the sign-up
   when the policy failed to evaluate or had no result. v1 rejects it with
   `the sign-up policy failed` and logs the error.
-- **Actions are validated.** PreSignUp actions must be `allow` or `deny`
-  (any case). v0 allowed every action other than `deny`, including typos
-  such as `Deny`.
+- **Actions are validated.** An unknown action or parameter, or a result
+  with neither `signup.allow` nor `signup.deny`, rejects the sign-up. v0
+  allowed every action other than `deny`, including typos such as `Deny`.
 - **`emailVerification` is missing when verification didn't run:** when
   it's disabled, the trigger isn't listed, the user has no email, or
   SendGrid failed. v0 passed a perfect result (`valid: true`, `score: 100`)
@@ -103,9 +122,10 @@ rule, and the result shape are unchanged.
 
 ## New in v1
 
-- **The PostConfirmation hook,** which scrambles each newly confirmed native
-  user's password for passwordless-only user pools. See
-  [PostConfirmation](postconfirmation.md).
+- **The PostConfirmation hook,** whose default action (`password.replace`)
+  replaces each confirmed native user's password with a random one, for
+  passwordless-only user pools. A policy can keep some passwords
+  (`password.skip`). See [PostConfirmation](postconfirmation.md).
 - **`devtool eval`** evaluates policies against sample events offline, and
   **`devtool run`** runs events through the whole function.
 - **Prebuilt release binaries** for `linux/arm64` and `linux/amd64`.

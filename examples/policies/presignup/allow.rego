@@ -5,4 +5,4 @@ package cognito_hook_presignup
 
 import rego.v1
 
-result := {"action": "allow"}
+result := {"actions": ["signup.allow"]}

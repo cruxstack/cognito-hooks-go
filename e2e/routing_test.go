@@ -16,8 +16,8 @@ func TestRouting_BothHooks(t *testing.T) {
 
 	e.mustHandle(preSignUpEvent("PreSignUp_SignUp", "1example23456789", "emma@example.com"))
 	e.mustHandle(postConfirmationEvent("PostConfirmation_ConfirmSignUp", "1example23456789", "CONFIRMED"))
-	if got := len(e.cognito.scrambled()); got != 1 {
-		t.Errorf("scrambled %d users, want 1", got)
+	if got := len(e.cognito.replaced()); got != 1 {
+		t.Errorf("replaced %d passwords, want 1", got)
 	}
 }
 
@@ -38,7 +38,7 @@ func TestRouting_DisabledOrUnknownTriggerIsAnError(t *testing.T) {
 			}
 		})
 	}
-	if got := len(e.cognito.scrambled()); got != 0 {
-		t.Errorf("scrambled %d users, want 0", got)
+	if got := len(e.cognito.replaced()); got != 0 {
+		t.Errorf("replaced %d passwords, want 0", got)
 	}
 }

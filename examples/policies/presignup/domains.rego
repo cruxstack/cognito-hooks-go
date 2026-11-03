@@ -11,17 +11,23 @@ import rego.v1
 
 allowed_domains := {"example.com", "example.org"}
 
-default result := {
-	"action": "deny",
+result := {"actions": actions}
+
+# signup.deny wins over signup.allow, so the allow can be unconditional and
+# each rule that denies stays independent of the others
+actions contains "signup.allow"
+
+actions contains {
+	"action": "signup.deny",
 	"reason": "Sign-up is limited to example.com and example.org addresses.",
-}
-
-result := {"action": "allow"} if input.trigger != "PreSignUp_SignUp"
-
-result := {"action": "allow"} if {
+} if {
 	input.trigger == "PreSignUp_SignUp"
-	email_domain in allowed_domains
+	not allowed_email
 }
+
+# true for an address in an allowed domain; undefined otherwise, including
+# when there's no email, so "not allowed_email" covers both
+allowed_email if email_domain in allowed_domains
 
 # the part after the last @, lowercased; undefined when there's no email
 email_domain := lower(parts[count(parts) - 1]) if {

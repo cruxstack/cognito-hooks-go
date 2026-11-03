@@ -22,9 +22,10 @@ Enable it with `APP_PRESIGNUP_ENABLED=true` and a policy at
 
 1. If email verification is on for the trigger and the user has an `email`
    attribute, the address is verified (see [below](#email-verification)).
-2. The policy evaluates the event and returns `allow` or `deny`.
-3. On `allow`, the hook returns the policy's flags to Cognito. On `deny`, it
-   returns the policy's reason as an error, and Cognito rejects the sign-up.
+2. The policy evaluates the event and returns its actions.
+3. On `signup.allow`, the hook returns Cognito's flags, set by the other
+   actions. On `signup.deny`, it returns the policy's reason as an error, and
+   Cognito rejects the sign-up.
 
 ## Policy input
 
@@ -60,44 +61,58 @@ Enable it with `APP_PRESIGNUP_ENABLED=true` and a policy at
 ## Policy result
 
 The policy is read from `APP_PRESIGNUP_POLICY_PATH` and must define
-`data.cognito_hook_presignup.result`.
+`data.cognito_hook_presignup.result` as `{"actions": [...]}` (see
+[actions](policies.md#actions)):
 
-To allow the sign-up:
+| Action         | Effect                                                          | Parameters          |
+| -------------- | --------------------------------------------------------------- | ------------------- |
+| `signup.allow` | Allows the sign-up.                                             |                     |
+| `signup.deny`  | Denies the sign-up. Wins over `signup.allow`.                   | `reason` (optional) |
+| `user.confirm` | Confirms the user without a code (Cognito's `autoConfirmUser`). |                     |
+| `email.verify` | Marks the email address verified (`autoVerifyEmail`).           |                     |
+| `phone.verify` | Marks the phone number verified (`autoVerifyPhone`).            |                     |
+
+The result needs `signup.allow` or `signup.deny`; with neither, the
+sign-up is rejected as a policy failure. When the sign-up is denied, the
+other actions are ignored.
 
 ```jsonc
-{
-  "action": "allow",
-  // optional; every flag defaults to false
-  "response": {
-    "autoConfirmUser": true,  // confirm the user without a code
-    "autoVerifyEmail": false, // mark the email address verified
-    "autoVerifyPhone": false  // mark the phone number verified
-  }
+// allow, and confirm the user without a code
+{ "actions": ["signup.allow", "user.confirm"] }
+
+// deny
+{ "actions": [{ "action": "signup.deny", "reason": "Sign-up is limited to example.com addresses." }] }
+```
+
+Because a denial wins, a policy can allow unconditionally and deny in
+separate rules:
+
+```rego
+result := {"actions": actions}
+
+actions contains "signup.allow"
+
+actions contains {"action": "signup.deny", "reason": "Sign-up is limited to example.com addresses."} if {
+	not endswith(input.userAttributes.email, "@example.com")
 }
 ```
+
+The reason is shown to the user. Cognito returns `PreSignUp failed with
+error <reason>.` to the app, so write it for the user, and leave out
+anything you wouldn't show them. Without a reason the user sees `sign-up is
+not allowed`. When several denials match, the first one's reason is shown.
 
 What Cognito does with the flags:
 
 - It ignores them for `PreSignUp_AdminCreateUser`.
-- It rejects the sign-up if a flag asks it to verify an attribute the user
-  doesn't have, such as `autoVerifyEmail` without an `email` attribute.
+- It rejects the sign-up if an action asks it to verify an attribute the
+  user doesn't have, such as `email.verify` without an `email` attribute.
 - Auto-verifying skips the proof that the user owns the address or phone
   number. When `email` (or `phone_number`) is a sign-in alias and another
   user already has it, Cognito moves the alias to the new user and marks the
   other user's address unverified. Only auto-verify what something else has
   proved, and don't decide on `callerContext.clientId` alone: an app client
   ID isn't a secret unless the client has a client secret.
-
-To deny it:
-
-```json
-{ "action": "deny", "reason": "Sign-up is limited to example.com addresses." }
-```
-
-The reason is shown to the user. Cognito returns `PreSignUp failed with
-error <reason>.` to the app, so write it for the user, and leave out
-anything you wouldn't show them. Without a reason the user sees `sign-up is
-not allowed`.
 
 ## Failure handling
 
@@ -106,9 +121,10 @@ rejected.
 
 | Situation                                                     | Result                                              |
 | ------------------------------------------------------------- | --------------------------------------------------- |
-| The policy allows the sign-up                                 | the policy's flags are returned                     |
+| The policy allows the sign-up                                 | the flags its actions set are returned              |
 | The policy denies the sign-up                                 | rejected with the policy's reason                   |
-| The policy fails, has no result, or returns an unknown action | rejected with `the sign-up policy failed`; logged   |
+| The policy fails or has no result                             | rejected with `the sign-up policy failed`; logged   |
+| An unknown action or parameter, or no `signup.*` action       | rejected with `the sign-up policy failed`; logged   |
 | SendGrid is unavailable or returns an error                   | logged; the policy runs without `emailVerification` |
 | The policy doesn't compile or define its `result` rule        | the function doesn't start                          |
 

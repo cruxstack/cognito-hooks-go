@@ -6,12 +6,16 @@ routes the event to the hook for its trigger source, which returns the
 (possibly changed) event or an error.
 
 ```text
-Cognito ─▶ handler ─┬─▶ PreSignUp:        verify ─▶ policy ─▶ allow (flags) / deny (error)
+Cognito ─▶ handler ─┬─▶ PreSignUp:        verify ─▶ policy ─▶ actions ─▶ allow (flags) / deny (error)
            (routes  │                     (SendGrid) (Rego)
            by trigger)
-                    └─▶ PostConfirmation: federated? ─▶ policy ─▶ AdminSetUserPassword
-                                                       (Rego)     (Cognito)
+                    └─▶ PostConfirmation: policy ─▶ actions ─▶ AdminSetUserPassword
+                                          (Rego)               (Cognito; not for federated users)
 ```
+
+Each policy returns a list of [actions](policies.md#actions), such as
+`signup.allow` or `password.skip`. The hook resolves them (the more
+restrictive action wins) and carries them out in its own order.
 
 ## Packages
 
@@ -22,10 +26,11 @@ Cognito ─▶ handler ─┬─▶ PreSignUp:        verify ─▶ policy ─�
 | `internal/app`              | Composition root. Builds every dependency from the configuration; options replace the Cognito and HTTP clients in tests and the devtool. |
 | `internal/config`           | Reads and validates environment variables. No other package reads the environment.                  |
 | `internal/handler`          | Decodes the event, adds log context, and routes it by trigger source to a hook.                      |
-| `internal/presignup`        | The PreSignUp hook: policy input, decision validation, and email verification.                       |
-| `internal/postconfirmation` | The PostConfirmation hook: the federated-user check, the optional policy, and the password scramble. |
+| `internal/presignup`        | The PreSignUp hook: policy input, resolving its actions, and email verification.                     |
+| `internal/postconfirmation` | The PostConfirmation hook: the optional policy, its actions, and the password replacement.          |
 | `internal/cognito`          | The policy input fields every hook shares.                                                           |
 | `internal/policy`           | Compiles and evaluates Rego policies.                                                                |
+| `internal/action`           | Decodes the actions a policy returns (`{"actions": [...]}`), which each hook resolves.               |
 | `internal/verify`           | Email verification with SendGrid and the domain allowlist.                                           |
 | `internal/sendgrid`         | A minimal client for the SendGrid Email Address Validation API.                                      |
 | `internal/password`         | Random passwords that satisfy any Cognito password policy.                                           |
@@ -45,8 +50,9 @@ app that made the request. Each hook decides what an error means for it.
   sign-up, so a broken policy can't let unwanted users in. A SendGrid outage
   is not a policy failure: the policy runs without the verification result.
 - **PostConfirmation never fails.** The user is already confirmed, so an
-  error couldn't undo anything. A failed or invalid policy scrambles the
-  password anyway, and a failed scramble is logged.
+  error couldn't undo anything. A failed or invalid policy falls back to
+  the default actions, which replace the password, and a failed replacement
+  is logged.
 - **Misrouted events are errors.** An event for a hook that isn't enabled,
   or for an unsupported trigger, returns an error instead of passing
   through, so a function attached to the wrong trigger is noticed.
@@ -68,11 +74,22 @@ and [PostConfirmation](postconfirmation.md#failure-handling).
 - **Personal data stays out of logs** unless `APP_LOG_LEVEL=debug`: email
   addresses are masked, and passwords are never logged.
 
+## Adding an action
+
+1. Add the action's name (`<resource>.<verb>`) to the hook's action
+   constants and `Actions` list, and resolve it in the hook's `Decide`: decode
+   its parameters with `Action.Decode`, and decide how it combines with the
+   other actions (the more restrictive one wins).
+2. Carry it out in the hook's `Handle`, in a fixed order, and log the result.
+3. Add it to the hook's page in `docs/`, with an example policy and tests.
+
+A new action is a minor release: existing policies don't return it.
+
 ## Adding a hook
 
 1. Add `internal/<hook>` with the hook's trigger prefix, policy query,
-   `PolicyInput` (embedding `cognito.Header`), `Decision`, and a `Hook` with
-   `Handle(ctx, *Event) error`.
+   `PolicyInput` (embedding `cognito.Header`), its actions and `Decide`, and
+   a `Hook` with `Handle(ctx, *Event) error`.
 2. Add a field to `handler.Handler` and a case to its router.
 3. Add `APP_<HOOK>_ENABLED` (and `_POLICY_PATH`) to `internal/config`, and
    wire the hook in `internal/app`.

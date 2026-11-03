@@ -13,7 +13,7 @@ import (
 	"github.com/cruxstack/cognito-hooks-go/internal/config"
 )
 
-func TestPostConfirmation_ScramblesNativeUsers(t *testing.T) {
+func TestPostConfirmation_ReplacesNativeUsersPasswords(t *testing.T) {
 	e := newEnv(t, map[string]string{"APP_POSTCONFIRMATION_ENABLED": "true"})
 
 	for _, trigger := range []string{"PostConfirmation_ConfirmSignUp", "PostConfirmation_ConfirmForgotPassword"} {
@@ -28,8 +28,8 @@ func TestPostConfirmation_ScramblesNativeUsers(t *testing.T) {
 		"us-east-1_EXAMPLE/8a1b2c3d-0000-4000-8000-000000000001",
 		"us-east-1_EXAMPLE/8a1b2c3d-0000-4000-8000-000000000001",
 	}
-	if got := e.cognito.scrambled(); !slices.Equal(got, want) {
-		t.Errorf("scrambled = %v, want %v (federated users are skipped)", got, want)
+	if got := e.cognito.replaced(); !slices.Equal(got, want) {
+		t.Errorf("replaced = %v, want %v (federated users keep theirs)", got, want)
 	}
 }
 
@@ -40,24 +40,24 @@ func TestPostConfirmation_PolicySkipsTestClient(t *testing.T) {
 	})
 
 	e.mustHandle(postConfirmationEvent("PostConfirmation_ConfirmSignUp", "9test8client7id6example", "CONFIRMED"))
-	if got := len(e.cognito.scrambled()); got != 0 {
-		t.Errorf("scrambled %d users, want 0 for the test client", got)
+	if got := len(e.cognito.replaced()); got != 0 {
+		t.Errorf("replaced %d passwords, want 0 for the test client", got)
 	}
 	e.mustHandle(postConfirmationEvent("PostConfirmation_ConfirmSignUp", "1example23456789", "CONFIRMED"))
-	if got := len(e.cognito.scrambled()); got != 1 {
-		t.Errorf("scrambled %d users, want 1", got)
+	if got := len(e.cognito.replaced()); got != 1 {
+		t.Errorf("replaced %d passwords, want 1", got)
 	}
 }
 
-// A policy that fails at evaluation time still scrambles the password.
-func TestPostConfirmation_BrokenPolicyStillScrambles(t *testing.T) {
+// A policy that fails at evaluation time still replaces the password.
+func TestPostConfirmation_BrokenPolicyStillReplaces(t *testing.T) {
 	e := newEnv(t, map[string]string{
 		"APP_POSTCONFIRMATION_ENABLED":     "true",
 		"APP_POSTCONFIRMATION_POLICY_PATH": writePolicy(t, "package cognito_hook_postconfirmation\n\nresult := \"skip\"\n"),
 	})
 	e.mustHandle(postConfirmationEvent("PostConfirmation_ConfirmSignUp", "1example23456789", "CONFIRMED"))
-	if got := len(e.cognito.scrambled()); got != 1 {
-		t.Errorf("scrambled %d users, want 1", got)
+	if got := len(e.cognito.replaced()); got != 1 {
+		t.Errorf("replaced %d passwords, want 1", got)
 	}
 }
 
@@ -67,7 +67,7 @@ func TestPostConfirmation_MisspelledPolicyFailsAtStartup(t *testing.T) {
 	cfg, err := config.Load(func(k string) (string, bool) {
 		v, ok := map[string]string{
 			"APP_POSTCONFIRMATION_ENABLED":     "true",
-			"APP_POSTCONFIRMATION_POLICY_PATH": writePolicy(t, "package cognito_hook_post_confirmation\n\nresult := {\"action\": \"skip\"}\n"),
+			"APP_POSTCONFIRMATION_POLICY_PATH": writePolicy(t, "package cognito_hook_post_confirmation\n\nresult := {\"actions\": [\"password.skip\"]}\n"),
 		}[k]
 		return v, ok
 	})
@@ -87,7 +87,7 @@ func TestPostConfirmation_CognitoErrorDoesNotFail(t *testing.T) {
 	e.cognito.err = errors.New("TooManyRequestsException")
 
 	e.mustHandle(postConfirmationEvent("PostConfirmation_ConfirmSignUp", "1example23456789", "CONFIRMED"))
-	if got := len(e.cognito.scrambled()); got != 1 {
+	if got := len(e.cognito.replaced()); got != 1 {
 		t.Errorf("AdminSetUserPassword calls = %d, want 1", got)
 	}
 }

@@ -10,12 +10,17 @@ package cognito_hook_presignup
 
 import rego.v1
 
-deny(reason) := {"action": "deny", "reason": reason}
+result := {"actions": actions}
 
-# "else" picks the first matching rule, so two matching denials can't
-# conflict
-result := deny("Enter an email address that can receive email.") if {
+actions contains "signup.allow"
+
+actions contains deny("Enter an email address that can receive email.") if {
 	input.emailVerification.valid == false
-} else := deny("Disposable email addresses can't be used to sign up.") if {
+}
+
+actions contains deny("Disposable email addresses can't be used to sign up.") if {
+	input.emailVerification.valid == true
 	input.emailVerification.disposable == true
-} else := {"action": "allow"}
+}
+
+deny(reason) := {"action": "signup.deny", "reason": reason}

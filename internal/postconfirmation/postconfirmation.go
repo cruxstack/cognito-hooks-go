@@ -1,14 +1,14 @@
-// Package postconfirmation implements the PostConfirmation hook. It replaces
-// the password of each native user who confirms their sign-up or resets
-// their password with a random one that nobody knows, so the user can only
-// sign in with passwordless factors such as email or SMS one-time passwords
-// and passkeys.
+// Package postconfirmation implements the PostConfirmation hook. It runs
+// after a user confirms their sign-up or resets their password, and carries
+// out the actions its optional policy returns. By default (password.replace)
+// it replaces the password of each native user with a random one that nobody
+// knows, so the user can only sign in with passwordless factors such as email
+// or SMS one-time passwords and passkeys.
 package postconfirmation
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 
@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	cip "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 
+	"github.com/cruxstack/cognito-hooks-go/internal/action"
 	"github.com/cruxstack/cognito-hooks-go/internal/cognito"
 	"github.com/cruxstack/cognito-hooks-go/internal/logging"
 	"github.com/cruxstack/cognito-hooks-go/internal/password"
@@ -37,11 +38,19 @@ const (
 	TriggerConfirmForgotPassword = "PostConfirmation_ConfirmForgotPassword"
 )
 
-// Policy actions.
+// Actions a PostConfirmation policy can return.
 const (
-	ActionScramble = "scramble"
-	ActionSkip     = "skip"
+	// ActionReplacePassword replaces the user's password with a random one.
+	// It is the default when the policy returns no password action, and it
+	// wins over ActionSkipPassword.
+	ActionReplacePassword = "password.replace"
+	// ActionSkipPassword keeps the user's password. It takes an optional
+	// "reason", which is logged.
+	ActionSkipPassword = "password.skip"
 )
+
+// Actions lists the actions a PostConfirmation policy can return.
+var Actions = []string{ActionReplacePassword, ActionSkipPassword}
 
 // PasswordLength is the length of the random password set on each user. A
 // user pool's minimum password length can be up to 99, and Cognito accepts
@@ -75,34 +84,75 @@ func NewPolicyInput(e *Event) PolicyInput {
 	}
 }
 
-// Decision is the policy's result document.
+// Decision is what the hook does for a user, resolved from the policy's
+// actions.
 type Decision struct {
-	Action string `json:"action"`
-	// Reason is logged when the user is skipped.
+	// Actions are the actions the policy returned; empty without a policy.
+	Actions []action.Action `json:"actions"`
+	// ReplacePassword is false when the password is kept.
+	ReplacePassword bool `json:"replacePassword"`
+	// Reason is why the password is kept.
 	Reason string `json:"reason,omitempty"`
 }
 
-// Decide evaluates the policy for one input and validates the result.
+// DefaultDecision is the decision without a policy, and when the policy
+// fails: replace the password.
+func DefaultDecision() *Decision {
+	return &Decision{Actions: []action.Action{}, ReplacePassword: true}
+}
+
+// Decide evaluates the policy for one input and resolves its actions:
+//
+//   - password.replace is the default, and wins over password.skip.
+//   - Unknown actions and parameters make the result invalid.
 func Decide(ctx context.Context, p *policy.Engine, in PolicyInput) (*Decision, error) {
-	d, err := policy.Eval[Decision](ctx, p, in)
+	res, err := policy.Eval[action.Result](ctx, p, in)
 	if err != nil {
 		return nil, err
 	}
-	d.Action = strings.ToLower(strings.TrimSpace(d.Action))
-	switch d.Action {
-	case ActionScramble, ActionSkip:
-		return &d, nil
-	case "":
-		return nil, errors.New(`policy result has no "action"`)
-	default:
-		return nil, fmt.Errorf(`policy result has unknown action %q: must be "scramble" or "skip"`, d.Action)
+	if err := res.Check(); err != nil {
+		return nil, err
 	}
+
+	var replace, skip bool
+	var reason string
+	for _, a := range res.Actions {
+		var err error
+		switch a.Name {
+		case ActionReplacePassword:
+			replace, err = true, a.Decode(&struct{}{})
+		case ActionSkipPassword:
+			var params struct {
+				Reason string `json:"reason"`
+			}
+			err = a.Decode(&params)
+			if !skip {
+				reason = strings.TrimSpace(params.Reason)
+			}
+			skip = true
+		default:
+			err = action.Unknown(a, "PostConfirmation", Actions)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	d := &Decision{Actions: res.Actions, ReplacePassword: replace || !skip}
+	if d.Actions == nil {
+		d.Actions = []action.Action{}
+	}
+	if !d.ReplacePassword {
+		d.Reason = reason
+	}
+	return d, nil
 }
 
 // Config configures the hook.
 type Config struct {
 	Cognito CognitoAPI
-	// Policy can exempt users. Nil scrambles every native user's password.
+	// Policy decides the actions for each user. Without one, every native
+	// user's password is replaced.
 	Policy *policy.Engine
 }
 
@@ -120,27 +170,47 @@ func New(cfg Config) (*Hook, error) {
 	return &Hook{cognito: cfg.Cognito, policy: cfg.Policy}, nil
 }
 
-// Handle scrambles the user's password unless the user is federated or the
-// policy skips them. It never returns an error: Cognito has already confirmed
-// the user, so failing would show the user an error without undoing anything.
-// Failures are logged as "password scramble failed".
+// Handle runs the policy and carries out its decision. It never returns an
+// error: Cognito has already confirmed the user, so failing would show the
+// user an error without undoing anything. When the policy fails, the hook
+// replaces the password anyway; a failed replacement is logged as "password
+// replacement failed".
 func (h *Hook) Handle(ctx context.Context, e *Event) error {
 	ctx = logging.WithAttrs(ctx, slog.String("sub", e.Request.UserAttributes["sub"]))
 
-	if e.Request.UserAttributes["cognito:user_status"] == UserStatusExternalProvider {
-		slog.InfoContext(ctx, "password scramble skipped", "reason", "federated user")
-		return nil
-	}
+	d := h.decide(ctx, e)
 
-	if skip, reason := h.skip(ctx, e); skip {
-		slog.InfoContext(ctx, "password scramble skipped", "reason", reason)
-		return nil
+	switch {
+	case e.Request.UserAttributes["cognito:user_status"] == UserStatusExternalProvider:
+		// federated users have no cognito password
+		slog.InfoContext(ctx, "password replacement skipped", "reason", "federated user")
+	case !d.ReplacePassword:
+		slog.InfoContext(ctx, "password replacement skipped", "reason", d.Reason)
+	default:
+		h.replacePassword(ctx, e)
 	}
+	return nil
+}
 
+// decide returns the policy's decision, or the default decision when there
+// is no policy or it fails.
+func (h *Hook) decide(ctx context.Context, e *Event) *Decision {
+	if h.policy == nil {
+		return DefaultDecision()
+	}
+	d, err := Decide(ctx, h.policy, NewPolicyInput(e))
+	if err != nil {
+		slog.ErrorContext(ctx, "policy failed, applying the default actions", "error", err)
+		return DefaultDecision()
+	}
+	return d
+}
+
+func (h *Hook) replacePassword(ctx context.Context, e *Event) {
 	pw, err := password.Generate(PasswordLength)
 	if err != nil {
-		slog.ErrorContext(ctx, "password scramble failed", "error", err)
-		return nil
+		slog.ErrorContext(ctx, "password replacement failed", "error", err)
+		return
 	}
 	if _, err := h.cognito.AdminSetUserPassword(ctx, &cip.AdminSetUserPasswordInput{
 		UserPoolId: aws.String(e.UserPoolID),
@@ -148,24 +218,8 @@ func (h *Hook) Handle(ctx context.Context, e *Event) error {
 		Password:   aws.String(pw),
 		Permanent:  true,
 	}); err != nil {
-		slog.ErrorContext(ctx, "password scramble failed", "error", err)
-		return nil
+		slog.ErrorContext(ctx, "password replacement failed", "error", err)
+		return
 	}
-
-	slog.InfoContext(ctx, "password scrambled")
-	return nil
-}
-
-// skip reports whether the policy exempts the user. It fails closed: when the
-// policy fails, the password is scrambled.
-func (h *Hook) skip(ctx context.Context, e *Event) (bool, string) {
-	if h.policy == nil {
-		return false, ""
-	}
-	d, err := Decide(ctx, h.policy, NewPolicyInput(e))
-	if err != nil {
-		slog.ErrorContext(ctx, "policy failed, scrambling the password anyway", "error", err)
-		return false, ""
-	}
-	return d.Action == ActionSkip, d.Reason
+	slog.InfoContext(ctx, "password replaced")
 }

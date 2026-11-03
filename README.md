@@ -21,13 +21,16 @@ One binary serves every hook; each function enables the hooks it handles.
 
 ## Features
 
-- **Policy-driven decisions.** Allow, deny, or auto-confirm by email domain,
-  app client, trigger, user attribute, or client metadata.
+- **Policy-driven actions.** Allow, deny, or auto-confirm by email domain,
+  app client, trigger, user attribute, or client metadata. Policies return
+  named actions (`signup.allow`, `password.skip`, ...), so hooks can gain
+  actions without breaking existing policies.
 - **Email verification** with the SendGrid Email Address Validation API:
   deny undeliverable and disposable addresses, with an allowlist of trusted
   domains.
-- **Passwordless enforcement.** Scramble passwords on confirmation and after
-  password resets, so only passwordless factors can sign in.
+- **Passwordless enforcement.** Replace passwords with random ones on
+  confirmation and after password resets, so only passwordless factors can
+  sign in.
 - **Safe by default.** Configuration and policies are checked at startup, a
   broken PreSignUp policy rejects sign-ups instead of letting them through,
   and logs mask email addresses.
@@ -35,16 +38,22 @@ One binary serves every hook; each function enables the hooks it handles.
 ## How it works
 
 Cognito calls the function with a trigger event. The function routes it to
-the hook for its trigger source, and the hook evaluates your policy:
+the hook for its trigger source, the hook evaluates your policy, and carries
+out the actions it returns:
 
 ```rego
 package cognito_hook_presignup
 
 import rego.v1
 
-default result := {"action": "deny", "reason": "Sign-up is limited to example.com addresses."}
+result := {"actions": actions}
 
-result := {"action": "allow"} if endswith(input.userAttributes.email, "@example.com")
+actions contains "signup.allow"
+
+# a denial wins over the allow
+actions contains {"action": "signup.deny", "reason": "Sign-up is limited to example.com addresses."} if {
+	not endswith(input.userAttributes.email, "@example.com")
+}
 ```
 
 A denial's reason is shown to the user. See [policies](docs/policies.md) for

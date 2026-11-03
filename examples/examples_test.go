@@ -158,7 +158,7 @@ func (c *countingCognito) AdminSetUserPassword(context.Context, *cip.AdminSetUse
 
 var postConfirmationTests = map[string][]bool{
 	// events: sign-up confirmation, password reset, federated user, test
-	// client; true means the password is scrambled
+	// client; true means the password is replaced
 	"":                  {true, true, false, true},
 	"skip-clients.rego": {true, true, false, false},
 }
@@ -184,7 +184,7 @@ func TestPostConfirmationPolicies(t *testing.T) {
 					t.Fatal(err)
 				}
 				if got := c.calls == 1; got != want[i] {
-					t.Errorf("event %d (%s): scrambled = %v, want %v", i, e.TriggerSource, got, want[i])
+					t.Errorf("event %d (%s): replaced = %v, want %v", i, e.TriggerSource, got, want[i])
 				}
 			}
 		})

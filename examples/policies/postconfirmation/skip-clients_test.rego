@@ -13,16 +13,17 @@ confirmed(client_id) := {
 	"callerContext": {"clientId": client_id},
 }
 
-test_test_client_is_skipped if {
+test_test_client_keeps_its_password if {
 	r := policy.result with input as confirmed("9test8client7id6example")
-	r.action == "skip"
-	r.reason == "end-to-end test client"
+	r.actions == {{"action": "password.skip", "reason": "end-to-end test client"}}
 }
 
-test_other_clients_are_scrambled if {
-	policy.result.action == "scramble" with input as confirmed("1example23456789")
+test_other_clients_get_the_default if {
+	r := policy.result with input as confirmed("1example23456789")
+	count(r.actions) == 0
 }
 
-test_missing_client_is_scrambled if {
-	policy.result.action == "scramble" with input as {"trigger": "PostConfirmation_ConfirmForgotPassword"}
+test_missing_client_gets_the_default if {
+	r := policy.result with input as {"trigger": "PostConfirmation_ConfirmForgotPassword"}
+	count(r.actions) == 0
 }

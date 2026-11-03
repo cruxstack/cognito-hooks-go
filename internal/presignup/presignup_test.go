@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cruxstack/cognito-hooks-go/internal/policy"
@@ -41,41 +42,79 @@ func (f *fakeVerifier) Verify(_ context.Context, email string) (*verify.Result, 
 	return f.result, f.err
 }
 
+// outcome summarizes a decision as "allow[:flags]" or "deny:<reason>".
+func outcome(d *Decision) string {
+	if !d.Allowed {
+		return "deny:" + d.Reason
+	}
+	out := "allow"
+	if d.Response.AutoConfirmUser {
+		out += ":confirm"
+	}
+	if d.Response.AutoVerifyEmail {
+		out += ":email"
+	}
+	if d.Response.AutoVerifyPhone {
+		out += ":phone"
+	}
+	return out
+}
+
 func TestDecide(t *testing.T) {
 	tests := map[string]struct {
-		policy  string
-		want    Decision
-		wantErr bool
+		policy string
+		want   string // "" means invalid
 	}{
-		"allow with flags": {
-			policy: `result := {"action": "allow", "response": {"autoConfirmUser": true, "autoVerifyEmail": true}}`,
-			want:   Decision{Action: ActionAllow, Response: &Response{AutoConfirmUser: true, AutoVerifyEmail: true}},
+		"allow": {
+			policy: `result := {"actions": ["signup.allow"]}`,
+			want:   "allow",
 		},
-		"allow without a response": {
-			policy: `result := {"action": "allow"}`,
-			want:   Decision{Action: ActionAllow, Response: &Response{}},
+		"allow with every flag": {
+			policy: `result := {"actions": ["signup.allow", "user.confirm", "email.verify", "phone.verify"]}`,
+			want:   "allow:confirm:email:phone",
 		},
 		"deny with a reason": {
-			policy: `result := {"action": "deny", "reason": "invite only", "response": {"autoConfirmUser": true}}`,
-			want:   Decision{Action: ActionDeny, Reason: "invite only"},
+			policy: `result := {"actions": [{"action": "signup.deny", "reason": " invite only "}]}`,
+			want:   "deny:invite only",
 		},
 		"deny without a reason": {
-			policy: `result := {"action": "deny"}`,
-			want:   Decision{Action: ActionDeny, Reason: DefaultDenyReason},
+			policy: `result := {"actions": ["signup.deny"]}`,
+			want:   "deny:" + DefaultDenyReason,
 		},
-		"action is case insensitive": {
-			policy: `result := {"action": " DENY ", "reason": "no"}`,
-			want:   Decision{Action: ActionDeny, Reason: "no"},
+		"deny wins over allow and drops the flags": {
+			policy: `result := {"actions": ["signup.allow", "user.confirm", {"action": "signup.deny", "reason": "no"}]}`,
+			want:   "deny:no",
 		},
-		"unknown action":   {policy: `result := {"action": "block"}`, wantErr: true},
-		"missing action":   {policy: `result := {"reason": "no"}`, wantErr: true},
-		"undefined result": {policy: `result := {"action": "allow"} if false`, wantErr: true},
-		"not an object":    {policy: `result := "allow"`, wantErr: true},
+		"the first denial's reason is shown": {
+			policy: `result := {"actions": [{"action": "signup.deny", "reason": "first"}, {"action": "signup.deny", "reason": "second"}]}`,
+			want:   "deny:first",
+		},
+		"names are case insensitive": {
+			policy: `result := {"actions": [" Signup.Allow ", "USER.CONFIRM"]}`,
+			want:   "allow:confirm",
+		},
+		"duplicates are fine": {
+			policy: `result := {"actions": ["signup.allow", "signup.allow"]}`,
+			want:   "allow",
+		},
+		"a set of actions": {
+			policy: "result := {\"actions\": actions}\n\nactions contains \"signup.allow\"\n\nactions contains \"user.confirm\" if input.trigger == \"PreSignUp_SignUp\"",
+			want:   "allow:confirm",
+		},
+		"flags without a decision":           {policy: `result := {"actions": ["user.confirm"]}`},
+		"no actions":                         {policy: `result := {"actions": []}`},
+		"another hook's action":              {policy: `result := {"actions": ["signup.allow", "password.replace"]}`},
+		"unknown action":                     {policy: `result := {"actions": ["signup.block"]}`},
+		"misspelled parameter":               {policy: `result := {"actions": [{"action": "signup.deny", "reson": "no"}]}`},
+		"parameter on an action without any": {policy: `result := {"actions": [{"action": "signup.allow", "reason": "yes"}]}`},
+		"v0 result":                          {policy: `result := {"action": "allow", "response": {}}`},
+		"undefined result":                   {policy: `result := {"actions": ["signup.allow"]} if false`},
+		"not an object":                      {policy: `result := "signup.allow"`},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			d, err := Decide(context.Background(), compile(t, tt.policy), NewPolicyInput(event(TriggerSignUp, "a@example.com"), nil))
-			if tt.wantErr {
+			if tt.want == "" {
 				if err == nil {
 					t.Fatalf("Decide() = %+v, want an error", d)
 				}
@@ -84,17 +123,22 @@ func TestDecide(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, _ := json.Marshal(d)
-			want, _ := json.Marshal(tt.want)
-			if string(got) != string(want) {
-				t.Errorf("decision = %s, want %s", got, want)
+			if got := outcome(d); got != tt.want {
+				t.Errorf("decision = %s, want %s", got, tt.want)
 			}
 		})
 	}
 }
 
+func TestDecide_V0ResultError(t *testing.T) {
+	_, err := Decide(context.Background(), compile(t, `result := {"action": "deny"}`), NewPolicyInput(event(TriggerSignUp, "a@example.com"), nil))
+	if err == nil || !strings.Contains(err.Error(), "upgrading-to-v1") {
+		t.Errorf("err = %v, want a pointer to the upgrade guide", err)
+	}
+}
+
 func TestHandle_AllowSetsResponse(t *testing.T) {
-	h, err := New(Config{Policy: compile(t, `result := {"action": "allow", "response": {"autoConfirmUser": true}}`)})
+	h, err := New(Config{Policy: compile(t, `result := {"actions": ["signup.allow", "user.confirm"]}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,8 +152,9 @@ func TestHandle_AllowSetsResponse(t *testing.T) {
 }
 
 func TestHandle_DenyReturnsReason(t *testing.T) {
-	h, _ := New(Config{Policy: compile(t, `result := {"action": "deny", "reason": "invite only"}`)})
-	err := h.Handle(context.Background(), event(TriggerSignUp, "a@example.com"))
+	h, _ := New(Config{Policy: compile(t, `result := {"actions": [{"action": "signup.deny", "reason": "invite only"}]}`)})
+	e := event(TriggerSignUp, "a@example.com")
+	err := h.Handle(context.Background(), e)
 
 	var denied *DeniedError
 	if !errors.As(err, &denied) || denied.Error() != "invite only" {
@@ -120,9 +165,10 @@ func TestHandle_DenyReturnsReason(t *testing.T) {
 // A broken policy must not let sign-ups through.
 func TestHandle_FailsClosed(t *testing.T) {
 	for name, src := range map[string]string{
-		"conflicting rules": "result := {\"action\": \"allow\"}\nresult := {\"action\": \"deny\"} if true",
-		"undefined":         `result := {"action": "deny"} if input.never`,
-		"typo in action":    `result := {"action": "alow"}`,
+		"conflicting rules": "result := {\"actions\": [\"signup.allow\"]}\nresult := {\"actions\": [\"signup.deny\"]} if true",
+		"undefined":         `result := {"actions": ["signup.deny"]} if input.never`,
+		"typo in action":    `result := {"actions": ["signup.alow"]}`,
+		"no decision":       `result := {"actions": ["user.confirm"]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			h, _ := New(Config{Policy: compile(t, src)})
@@ -135,7 +181,7 @@ func TestHandle_FailsClosed(t *testing.T) {
 }
 
 // echo denies with the policy input as the reason, so tests can inspect it.
-const echo = `result := {"action": "deny", "reason": json.marshal(input)}`
+const echo = `result := {"actions": [{"action": "signup.deny", "reason": json.marshal(input)}]}`
 
 func inputOf(t *testing.T, h *Hook, e *Event) map[string]any {
 	t.Helper()

@@ -1,7 +1,7 @@
-// Package presignup implements the PreSignUp hook. A policy decides whether a
-// user may sign up and can set Cognito's auto-confirm and auto-verify flags.
-// The policy can be given an email verification result for the new user's
-// address.
+// Package presignup implements the PreSignUp hook. A policy's actions decide
+// whether a user may sign up and can set Cognito's auto-confirm and
+// auto-verify flags. The policy can be given an email verification result
+// for the new user's address.
 package presignup
 
 import (
@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"github.com/cruxstack/cognito-hooks-go/internal/action"
 	"github.com/cruxstack/cognito-hooks-go/internal/cognito"
 	"github.com/cruxstack/cognito-hooks-go/internal/logging"
 	"github.com/cruxstack/cognito-hooks-go/internal/policy"
@@ -36,11 +37,23 @@ const (
 // Triggers lists every PreSignUp trigger source.
 var Triggers = []string{TriggerSignUp, TriggerAdminCreateUser, TriggerExternalProvider}
 
-// Policy actions.
+// Actions a PreSignUp policy can return.
 const (
-	ActionAllow = "allow"
-	ActionDeny  = "deny"
+	// ActionAllow allows the sign-up.
+	ActionAllow = "signup.allow"
+	// ActionDeny denies the sign-up. It takes an optional "reason", which is
+	// shown to the user, and wins over ActionAllow.
+	ActionDeny = "signup.deny"
+	// ActionConfirmUser confirms the user without a code (autoConfirmUser).
+	ActionConfirmUser = "user.confirm"
+	// ActionVerifyEmail marks the email address verified (autoVerifyEmail).
+	ActionVerifyEmail = "email.verify"
+	// ActionVerifyPhone marks the phone number verified (autoVerifyPhone).
+	ActionVerifyPhone = "phone.verify"
 )
+
+// Actions lists the actions a PreSignUp policy can return.
+var Actions = []string{ActionAllow, ActionDeny, ActionConfirmUser, ActionVerifyEmail, ActionVerifyPhone}
 
 // DefaultDenyReason is shown to the user when the policy denies a sign-up
 // without a reason.
@@ -88,40 +101,79 @@ func NewPolicyInput(e *Event, v *verify.Result) PolicyInput {
 	}
 }
 
-// Decision is the policy's result document.
+// Decision is what the hook does with a sign-up, resolved from the policy's
+// actions.
 type Decision struct {
-	Action string `json:"action"`
+	// Actions are the actions the policy returned.
+	Actions []action.Action `json:"actions"`
+	// Allowed is false when the sign-up is denied.
+	Allowed bool `json:"allowed"`
 	// Reason is shown to the user when the sign-up is denied.
 	Reason string `json:"reason,omitempty"`
-	// Response sets Cognito's flags when the sign-up is allowed.
-	Response *Response `json:"response,omitempty"`
+	// Response holds Cognito's flags when the sign-up is allowed.
+	Response Response `json:"response"`
 }
 
-// Decide evaluates the policy for one input and validates the result.
+// Decide evaluates the policy for one input and resolves its actions:
+//
+//   - signup.deny wins over signup.allow, so a policy can allow
+//     unconditionally and deny in separate rules. The first denial's reason
+//     is shown to the user.
+//   - One of them is required; without either the result is invalid.
+//   - user.confirm, email.verify, and phone.verify set Cognito's flags when
+//     the sign-up is allowed.
+//   - Unknown actions and parameters make the result invalid.
 func Decide(ctx context.Context, p *policy.Engine, in PolicyInput) (*Decision, error) {
-	d, err := policy.Eval[Decision](ctx, p, in)
+	res, err := policy.Eval[action.Result](ctx, p, in)
 	if err != nil {
 		return nil, err
 	}
+	if err := res.Check(); err != nil {
+		return nil, err
+	}
 
-	d.Action = strings.ToLower(strings.TrimSpace(d.Action))
-	switch d.Action {
-	case ActionAllow:
-		if d.Response == nil {
-			d.Response = &Response{}
+	d := &Decision{Actions: res.Actions}
+	var allowed, denied bool
+	for _, a := range res.Actions {
+		var err error
+		switch a.Name {
+		case ActionAllow:
+			allowed, err = true, a.Decode(&struct{}{})
+		case ActionDeny:
+			var params struct {
+				Reason string `json:"reason"`
+			}
+			err = a.Decode(&params)
+			if !denied {
+				d.Reason = strings.TrimSpace(params.Reason)
+			}
+			denied = true
+		case ActionConfirmUser:
+			d.Response.AutoConfirmUser, err = true, a.Decode(&struct{}{})
+		case ActionVerifyEmail:
+			d.Response.AutoVerifyEmail, err = true, a.Decode(&struct{}{})
+		case ActionVerifyPhone:
+			d.Response.AutoVerifyPhone, err = true, a.Decode(&struct{}{})
+		default:
+			err = action.Unknown(a, "PreSignUp", Actions)
 		}
-	case ActionDeny:
-		d.Reason = strings.TrimSpace(d.Reason)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	switch {
+	case denied:
+		d.Response = Response{}
 		if d.Reason == "" {
 			d.Reason = DefaultDenyReason
 		}
-		d.Response = nil
-	case "":
-		return nil, errors.New(`policy result has no "action"`)
+	case allowed:
+		d.Allowed = true
 	default:
-		return nil, fmt.Errorf(`policy result has unknown action %q: must be "allow" or "deny"`, d.Action)
+		return nil, fmt.Errorf("policy result has neither %s nor %s", ActionAllow, ActionDeny)
 	}
-	return &d, nil
+	return d, nil
 }
 
 // Config configures the hook.
@@ -163,12 +215,12 @@ func (h *Hook) Handle(ctx context.Context, e *Event) error {
 		return ErrPolicyFailed
 	}
 
-	if d.Action == ActionDeny {
+	if !d.Allowed {
 		slog.InfoContext(ctx, "sign-up denied", "reason", d.Reason)
 		return &DeniedError{Reason: d.Reason}
 	}
 
-	e.Response = *d.Response
+	e.Response = d.Response
 	slog.InfoContext(ctx, "sign-up allowed",
 		"auto_confirm_user", e.Response.AutoConfirmUser,
 		"auto_verify_email", e.Response.AutoVerifyEmail,

@@ -14,26 +14,31 @@ sign_up(verification) := {
 	"emailVerification": verification,
 }
 
+# the reasons of the policy's denials
+denials(result) := {a.reason | some a in result.actions; a.action == "signup.deny"}
+
 test_valid_address_is_allowed if {
-	policy.result.action == "allow" with input as sign_up({"valid": true, "verdict": "Valid", "disposable": false})
+	r := policy.result with input as sign_up({"valid": true, "verdict": "Valid", "disposable": false})
+	"signup.allow" in r.actions
+	count(denials(r)) == 0
 }
 
 test_risky_address_is_allowed if {
-	policy.result.action == "allow" with input as sign_up({"valid": true, "verdict": "Risky", "disposable": false})
+	r := policy.result with input as sign_up({"valid": true, "verdict": "Risky", "disposable": false})
+	count(denials(r)) == 0
 }
 
 test_undeliverable_address_is_denied if {
 	r := policy.result with input as sign_up({"valid": false, "verdict": "Invalid", "disposable": true})
-	r.action == "deny"
-	r.reason == "Enter an email address that can receive email."
+	denials(r) == {"Enter an email address that can receive email."}
 }
 
 test_disposable_address_is_denied if {
 	r := policy.result with input as sign_up({"valid": true, "verdict": "Risky", "disposable": true})
-	r.action == "deny"
-	r.reason == "Disposable email addresses can't be used to sign up."
+	denials(r) == {"Disposable email addresses can't be used to sign up."}
 }
 
 test_unverified_sign_up_is_allowed if {
-	policy.result.action == "allow" with input as {"trigger": "PreSignUp_SignUp", "userAttributes": {"email": "user@example.com"}}
+	r := policy.result with input as {"trigger": "PreSignUp_SignUp", "userAttributes": {"email": "user@example.com"}}
+	count(denials(r)) == 0
 }

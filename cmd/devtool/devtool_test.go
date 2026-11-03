@@ -46,23 +46,23 @@ func TestEval(t *testing.T) {
 	}{
 		"presignup": {
 			args: []string{"-presignup-policy", examples + "policies/presignup/domains.rego", "-events", examples + "events/presignup.json"},
-			want: []string{"allow", "deny: Sign-up is limited to example.com and example.org addresses.", "allow", "allow", "allow"},
+			want: []string{"signup.allow", "signup.deny: Sign-up is limited to example.com and example.org addresses.", "signup.allow", "signup.allow", "signup.allow"},
 		},
 		"presignup flags": {
 			args: []string{"-presignup-policy", examples + "policies/presignup/auto-confirm.rego", "-events", examples + "events/presignup.json"},
-			want: []string{"allow", "allow", "allow", "allow", "allow: autoConfirmUser"},
+			want: []string{"signup.allow", "signup.allow", "signup.allow", "signup.allow", "signup.allow, user.confirm"},
 		},
 		"verdict applies to the verified triggers only": {
 			args: []string{"-presignup-policy", examples + "policies/presignup/verification.rego", "-verdict", "invalid", "-events", examples + "events/presignup.json"},
-			want: []string{"deny: Enter an email address that can receive email.", "deny: Enter an email address that can receive email.", "allow", "allow", "deny: Enter an email address that can receive email."},
+			want: []string{"signup.deny: Enter an email address that can receive email.", "signup.deny: Enter an email address that can receive email.", "signup.allow", "signup.allow", "signup.deny: Enter an email address that can receive email."},
 		},
 		"postconfirmation": {
 			args: []string{"-postconfirmation-policy", examples + "policies/postconfirmation/skip-clients.rego", "-events", examples + "events/postconfirmation.json"},
-			want: []string{"scramble", "scramble", "skip: federated user", "skip: end-to-end test client"},
+			want: []string{"password.replace", "password.replace", "password.skip: federated user", "password.skip: end-to-end test client"},
 		},
 		"postconfirmation without a policy": {
 			args: []string{"-events", examples + "events/postconfirmation.json"},
-			want: []string{"scramble", "scramble", "skip: federated user", "scramble"},
+			want: []string{"password.replace", "password.replace", "password.skip: federated user", "password.replace"},
 		},
 	}
 	for name, tt := range tests {

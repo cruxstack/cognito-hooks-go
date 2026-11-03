@@ -17,7 +17,7 @@ event for a hook that isn't enabled is an error.
 | `APP_PRESIGNUP_ENABLED`            | Handle `PreSignUp_*` events. See [PreSignUp](presignup.md).                          | `false`               |
 | `APP_PRESIGNUP_POLICY_PATH`        | Path to the PreSignUp policy, relative to the working directory (`/var/task` in Lambda). | required when enabled |
 | `APP_POSTCONFIRMATION_ENABLED`     | Handle `PostConfirmation_*` events. See [PostConfirmation](postconfirmation.md).     | `false`               |
-| `APP_POSTCONFIRMATION_POLICY_PATH` | Path to the PostConfirmation policy. Without one, every native user is scrambled.    | unset                 |
+| `APP_POSTCONFIRMATION_POLICY_PATH` | Path to the PostConfirmation policy. Without one, every native user's password is replaced. | unset         |
 | `APP_LOG_LEVEL`                    | `debug`, `info`, `warn`, or `error`. `debug` logs every event, including user attributes. | `info`           |
 
 At least one hook must be enabled.

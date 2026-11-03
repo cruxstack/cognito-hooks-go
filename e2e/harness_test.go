@@ -135,7 +135,7 @@ func (f *fakeCognito) AdminSetUserPassword(_ context.Context, in *cip.AdminSetUs
 	return &cip.AdminSetUserPasswordOutput{}, nil
 }
 
-func (f *fakeCognito) scrambled() []string {
+func (f *fakeCognito) replaced() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]string, len(f.calls))

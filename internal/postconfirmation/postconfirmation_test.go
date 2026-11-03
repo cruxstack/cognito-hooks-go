@@ -58,7 +58,7 @@ func newHook(t *testing.T, c *fakeCognito, pol *policy.Engine) *Hook {
 	return h
 }
 
-func TestHandle_Scrambles(t *testing.T) {
+func TestHandle_ReplacesPassword(t *testing.T) {
 	for _, trigger := range []string{TriggerConfirmSignUp, TriggerConfirmForgotPassword} {
 		t.Run(trigger, func(t *testing.T) {
 			c := &fakeCognito{}
@@ -108,14 +108,19 @@ func TestHandle_Policy(t *testing.T) {
 		policy    string
 		wantCalls int
 	}{
-		"skip":                {`result := {"action": "skip", "reason": "test client"} if input.callerContext.clientId == "web"`, 0},
-		"scramble":            {`result := {"action": "scramble"}`, 1},
-		"action is any case":  {`result := {"action": "Skip"}`, 0},
-		"undefined scrambles": {`result := {"action": "skip"} if input.never`, 1},
-		"invalid scrambles":   {`result := {"action": "skipp"}`, 1},
-		"error scrambles":     {"result := {\"action\": \"skip\"}\nresult := {\"action\": \"scramble\"} if true", 1},
-		"by trigger":          {`result := {"action": "skip"} if input.trigger == "PostConfirmation_ConfirmSignUp"`, 0},
-		"by user attribute":   {`result := {"action": "skip"} if endswith(input.userAttributes.email, "@example.com")`, 0},
+		"skip":                       {`result := {"actions": [{"action": "password.skip", "reason": "test client"}]} if input.callerContext.clientId == "web"`, 0},
+		"replace":                    {`result := {"actions": ["password.replace"]}`, 1},
+		"no actions replaces":        {`result := {"actions": []}`, 1},
+		"replace wins over skip":     {`result := {"actions": ["password.skip", "password.replace"]}`, 1},
+		"names are case insensitive": {`result := {"actions": ["Password.Skip"]}`, 0},
+		"undefined replaces":         {`result := {"actions": ["password.skip"]} if input.never`, 1},
+		"unknown action replaces":    {`result := {"actions": ["password.keep"]}`, 1},
+		"another hook's action":      {`result := {"actions": ["password.skip", "signup.allow"]}`, 1},
+		"v0 result replaces":         {`result := {"action": "skip"}`, 1},
+		"error replaces":             {"result := {\"actions\": [\"password.skip\"]}\nresult := {\"actions\": []} if true", 1},
+		"by trigger":                 {`result := {"actions": ["password.skip"]} if input.trigger == "PostConfirmation_ConfirmSignUp"`, 0},
+		"by user attribute":          {`result := {"actions": ["password.skip"]} if endswith(input.userAttributes.email, "@example.com")`, 0},
+		"set of actions":             {"result := {\"actions\": actions}\n\nactions contains \"password.skip\" if input.callerContext.clientId == \"web\"", 0},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -127,6 +132,19 @@ func TestHandle_Policy(t *testing.T) {
 				t.Errorf("AdminSetUserPassword calls = %d, want %d", len(c.calls), tt.wantCalls)
 			}
 		})
+	}
+}
+
+// The policy runs for federated users too, so future actions can apply to
+// them, but their password is never replaced: they have none.
+func TestHandle_FederatedUsersRunThePolicyButKeepTheirPassword(t *testing.T) {
+	c := &fakeCognito{}
+	pol := compile(t, `result := {"actions": ["password.replace"]}`)
+	if err := newHook(t, c, pol).Handle(context.Background(), event(TriggerConfirmSignUp, UserStatusExternalProvider)); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.calls) != 0 {
+		t.Errorf("AdminSetUserPassword calls = %d, want 0", len(c.calls))
 	}
 }
 
@@ -148,14 +166,19 @@ func TestDecide(t *testing.T) {
 		t.Errorf("input = %+v", in)
 	}
 
-	d, err := Decide(context.Background(), compile(t, `result := {"action": "skip", "reason": "tester"}`), in)
-	if err != nil || d.Action != ActionSkip || d.Reason != "tester" {
+	d, err := Decide(context.Background(), compile(t, `result := {"actions": [{"action": "password.skip", "reason": " tester "}]}`), in)
+	if err != nil || d.ReplacePassword || d.Reason != "tester" || len(d.Actions) != 1 {
 		t.Errorf("Decide() = %+v, %v", d, err)
 	}
 
-	_, err = Decide(context.Background(), compile(t, `result := {"reason": "x"}`), in)
-	if err == nil || !strings.Contains(err.Error(), `no "action"`) {
-		t.Errorf("missing action: err = %v", err)
+	d, err = Decide(context.Background(), compile(t, `result := {}`), in)
+	if err != nil || !d.ReplacePassword || d.Actions == nil {
+		t.Errorf("no actions: Decide() = %+v, %v; want the default", d, err)
+	}
+
+	_, err = Decide(context.Background(), compile(t, `result := {"actions": ["groups.add"]}`), in)
+	if err == nil || !strings.Contains(err.Error(), "password.replace, password.skip") {
+		t.Errorf("unknown action: err = %v, want the known actions listed", err)
 	}
 }
 

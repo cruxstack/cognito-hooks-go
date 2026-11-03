@@ -60,9 +60,11 @@ func TestPreSignUp_DenyReasonReachesTheUser(t *testing.T) {
 // letting it through, and doesn't leak policy details to the user.
 func TestPreSignUp_BrokenPolicyFailsClosed(t *testing.T) {
 	for name, src := range map[string]string{
-		"conflicting results": "package cognito_hook_presignup\n\nresult := {\"action\": \"allow\"}\n\nresult := {\"action\": \"deny\"} if input.userAttributes.email\n",
-		"undefined result":    "package cognito_hook_presignup\n\nresult := {\"action\": \"allow\"} if input.never\n",
-		"unknown action":      "package cognito_hook_presignup\n\nresult := {\"action\": \"accept\"}\n",
+		"conflicting results": "package cognito_hook_presignup\n\nresult := {\"actions\": [\"signup.allow\"]}\n\nresult := {\"actions\": [\"signup.deny\"]} if input.userAttributes.email\n",
+		"undefined result":    "package cognito_hook_presignup\n\nresult := {\"actions\": [\"signup.allow\"]} if input.never\n",
+		"unknown action":      "package cognito_hook_presignup\n\nresult := {\"actions\": [\"signup.accept\"]}\n",
+		"no decision":         "package cognito_hook_presignup\n\nresult := {\"actions\": [\"user.confirm\"]}\n",
+		"v0 result":           "package cognito_hook_presignup\n\nresult := {\"action\": \"allow\"}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := preSignUpEnv(t, writePolicy(t, src), nil)
@@ -126,9 +128,9 @@ func TestPreSignUp_VerificationUnavailable(t *testing.T) {
 func TestPreSignUp_InvalidPolicyFailsAtStartup(t *testing.T) {
 	tests := map[string]string{
 		"syntax error":       "package cognito_hook_presignup\n\nresult := {\n",
-		"rego v0":            "package cognito_hook_presignup\n\nresult = {\"action\": \"allow\"} { true }\n",
-		"misspelled package": "package cognito_hooks_presignup\n\nresult := {\"action\": \"allow\"}\n",
-		"misspelled rule":    "package cognito_hook_presignup\n\nresults := {\"action\": \"allow\"}\n",
+		"rego v0":            "package cognito_hook_presignup\n\nresult = {\"actions\": [\"signup.allow\"]} { true }\n",
+		"misspelled package": "package cognito_hooks_presignup\n\nresult := {\"actions\": [\"signup.allow\"]}\n",
+		"misspelled rule":    "package cognito_hook_presignup\n\nresults := {\"actions\": [\"signup.allow\"]}\n",
 	}
 	for name, src := range tests {
 		t.Run(name, func(t *testing.T) {

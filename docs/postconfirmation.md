@@ -3,8 +3,9 @@
 Cognito invokes the
 [PostConfirmation trigger](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-lambda-post-confirmation.html)
 after a user confirms their sign-up or resets a forgotten password. This hook
-replaces the user's password with a random 128-character password that is
-never logged or returned. Nobody, including the user, knows it, so the user
+carries out the actions of an optional policy. Its default action,
+`password.replace`, replaces the user's password with a random
+128-character password that is never logged or returned. Nobody, including the user, knows it, so the user
 can only sign in with passwordless factors, such as email or SMS one-time
 passwords and passkeys. Stolen or guessed passwords stop working, and
 because the user now has a password, `ChangePassword` requires a previous
@@ -38,11 +39,11 @@ they know:
 - **Users created with `AdminCreateUser`.** Cognito doesn't invoke the
   trigger for them, so they keep the password they choose at their first
   sign-in.
-- **Users that a PreSignUp trigger auto-confirms** (`autoConfirmUser`), and
+- **Users that a PreSignUp trigger auto-confirms** (`user.confirm`), and
   **federated users.** AWS doesn't document whether the trigger runs for
-  them; check in a test user pool if you rely on it. The hook skips users
-  whose `cognito:user_status` is `EXTERNAL_PROVIDER`, because they have no
-  Cognito password.
+  them; check in a test user pool if you rely on it. The hook never replaces
+  the password of a user whose `cognito:user_status` is `EXTERNAL_PROVIDER`,
+  because they have no Cognito password.
 
 If no user may sign in with a password, also leave `PASSWORD` out of the
 user pool's allowed first factors. The hook is then defense in depth for
@@ -50,19 +51,28 @@ the users above and for app clients that still allow password flows.
 
 ## How it works
 
-1. Federated users (`cognito:user_status` of `EXTERNAL_PROVIDER`) are
-   skipped.
-2. If there is a policy, it can skip the user. Without one, every native
-   user's password is scrambled.
-3. The hook calls `AdminSetUserPassword` with `Permanent: true` and a random
-   password from `crypto/rand` that always includes lowercase, uppercase,
-   digit, and symbol characters.
+1. If there is a policy, it returns the actions for the user. Without one,
+   the default is `password.replace`.
+2. Unless the user is federated (`cognito:user_status` of
+   `EXTERNAL_PROVIDER`) or the policy returned `password.skip`, the hook
+   calls `AdminSetUserPassword` with `Permanent: true` and a random password
+   from `crypto/rand` that always includes lowercase, uppercase, digit, and
+   symbol characters.
 
 ## Policy
 
-Set `APP_POSTCONFIRMATION_POLICY_PATH` to exempt users, for example the app
-client of an end-to-end test suite that signs in with a password. The policy
-must define `data.cognito_hook_postconfirmation.result`.
+Set `APP_POSTCONFIRMATION_POLICY_PATH` to choose the actions per user, for
+example to keep the passwords of an end-to-end test suite that signs in with
+a password. The policy must define `data.cognito_hook_postconfirmation.result`
+as `{"actions": [...]}` (see [actions](policies.md#actions)):
+
+| Action             | Effect                                                                   | Parameters          |
+| ------------------ | ------------------------------------------------------------------------ | ------------------- |
+| `password.replace` | Replaces the password. The default when the policy returns no `password.*` action, and wins over `password.skip`. |   |
+| `password.skip`    | Keeps the password.                                                      | `reason` (optional; logged) |
+
+The policy runs for every user, including federated users, so actions added
+later can apply to them too.
 
 Input:
 
@@ -89,27 +99,25 @@ Input:
 Result:
 
 ```jsonc
-{
-  "action": "scramble", // or "skip"
-  "reason": "end-to-end test client" // optional; logged when skipped
-}
+{ "actions": [{ "action": "password.skip", "reason": "end-to-end test client" }] }
 ```
 
 [`skip-clients.rego`](../examples/policies/postconfirmation/skip-clients.rego)
-skips a list of app clients.
+keeps the passwords of a list of app clients.
 
 ## Failure handling
 
 The hook never fails the confirmation. Cognito has already confirmed the
 user, so an error would only show the user a failure without undoing
-anything. When the hook can't make a decision, it scrambles the password.
+anything. When the hook can't make a decision, it applies the default
+actions, so the password is replaced.
 
 | Situation                                                     | Result                                             |
 | ------------------------------------------------------------- | -------------------------------------------------- |
-| Federated user                                                | skipped; logged                                    |
-| The policy skips the user                                     | skipped; logged with the policy's reason           |
-| The policy fails, has no result, or returns an unknown action | scrambled; the policy error is logged              |
-| `AdminSetUserPassword` fails                                  | logged as `password scramble failed`; success      |
+| Federated user                                                | password kept; logged                              |
+| The policy returns `password.skip`                            | password kept; logged with the policy's reason     |
+| The policy fails, has no result, or returns an unknown action or parameter | default actions; the policy error is logged |
+| `AdminSetUserPassword` fails                                  | logged as `password replacement failed`; success   |
 | The policy doesn't compile or define its `result` rule        | the function doesn't start                         |
 
 ## Monitoring
@@ -121,9 +129,9 @@ alarm on both:
   Cognito still confirms the user, when it can't start (an invalid setting
   or policy logs `startup failed`), when the PostConfirmation hook isn't
   enabled on it, or when the event can't be decoded.
-- **Failed scrambles,** which return success. Use a CloudWatch Logs metric
-  filter on the function's log group:
+- **Failed replacements,** which return success. Use a CloudWatch Logs
+  metric filter on the function's log group:
 
   ```text
-  { $.msg = "password scramble failed" }
+  { $.msg = "password replacement failed" }
   ```

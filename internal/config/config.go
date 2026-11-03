@@ -39,7 +39,7 @@ type PreSignUp struct {
 type PostConfirmation struct {
 	Enabled bool
 	// PolicyPath is optional; without a policy every native user's password
-	// is scrambled.
+	// is replaced.
 	PolicyPath string
 }
 

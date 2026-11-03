@@ -39,7 +39,7 @@ func evalCmd(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	eventsPath := fs.String("events", "", "JSON file with an event or an array of events (required)")
 	preSignUpPolicy := fs.String("presignup-policy", "", "PreSignUp policy (required for PreSignUp events)")
-	postConfirmationPolicy := fs.String("postconfirmation-policy", "", "PostConfirmation policy (optional; without one every native user is scrambled)")
+	postConfirmationPolicy := fs.String("postconfirmation-policy", "", "PostConfirmation policy (optional; without one every native user's password is replaced)")
 	verdict := fs.String("verdict", "", "give PreSignUp policies an email verification result with this verdict: Valid, Risky, or Invalid")
 	verifyTriggers := fs.String("verify-triggers", presignup.TriggerSignUp, "comma-separated trigger sources -verdict applies to, as in APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES")
 	showInput := fs.Bool("show-input", false, "print the policy input for each event")
@@ -140,55 +140,62 @@ func evalEvent(ctx context.Context, raw json.RawMessage, res *evalResult, o eval
 			res.Error = fmt.Sprintf("decode event: %v", err)
 			return
 		}
-		if e.Request.UserAttributes["cognito:user_status"] == postconfirmation.UserStatusExternalProvider {
-			res.Outcome = "skip: federated user"
-			return
-		}
-		if o.postconfirmation == nil {
-			res.Outcome = postconfirmation.ActionScramble
-			return
-		}
 		in := postconfirmation.NewPolicyInput(&e)
 		res.Input = in
 
-		d, err := postconfirmation.Decide(ctx, o.postconfirmation, in)
-		if err != nil {
-			// the hook would scramble anyway, but the policy needs fixing
-			res.Error = err.Error() + " (the hook scrambles the password when the policy fails)"
-			return
+		d := postconfirmation.DefaultDecision()
+		if o.postconfirmation != nil {
+			var err error
+			if d, err = postconfirmation.Decide(ctx, o.postconfirmation, in); err != nil {
+				// the hook would apply the default actions, but the policy
+				// needs fixing
+				res.Error = err.Error() + " (the hook applies the default actions when the policy fails)"
+				return
+			}
 		}
 		res.Decision = d
-		res.Outcome = d.Action
-		if d.Reason != "" {
-			res.Outcome += ": " + d.Reason
-		}
+		res.Outcome = postConfirmationOutcome(&e, d)
 
 	default:
 		res.Error = "unsupported trigger source"
 	}
 }
 
-// preSignUpOutcome is "deny: <reason>", or "allow" followed by the flags the
-// policy set.
+// preSignUpOutcome is "signup.deny: <reason>", or "signup.allow" followed by
+// the actions that set Cognito's flags.
 func preSignUpOutcome(d *presignup.Decision) string {
-	if d.Action == presignup.ActionDeny {
-		return "deny: " + d.Reason
+	if !d.Allowed {
+		return presignup.ActionDeny + ": " + d.Reason
 	}
-	var flags []string
-	for name, set := range map[string]bool{
-		"autoConfirmUser": d.Response.AutoConfirmUser,
-		"autoVerifyEmail": d.Response.AutoVerifyEmail,
-		"autoVerifyPhone": d.Response.AutoVerifyPhone,
+	out := []string{presignup.ActionAllow}
+	for _, f := range []struct {
+		set  bool
+		name string
+	}{
+		{d.Response.AutoConfirmUser, presignup.ActionConfirmUser},
+		{d.Response.AutoVerifyEmail, presignup.ActionVerifyEmail},
+		{d.Response.AutoVerifyPhone, presignup.ActionVerifyPhone},
 	} {
-		if set {
-			flags = append(flags, name)
+		if f.set {
+			out = append(out, f.name)
 		}
 	}
-	if len(flags) == 0 {
-		return "allow"
+	return strings.Join(out, ", ")
+}
+
+// postConfirmationOutcome is "password.replace", or "password.skip: <reason>".
+// Federated users have no Cognito password, so the password is never
+// replaced for them.
+func postConfirmationOutcome(e *postconfirmation.Event, d *postconfirmation.Decision) string {
+	switch {
+	case e.Request.UserAttributes["cognito:user_status"] == postconfirmation.UserStatusExternalProvider:
+		return postconfirmation.ActionSkipPassword + ": federated user"
+	case !d.ReplacePassword && d.Reason != "":
+		return postconfirmation.ActionSkipPassword + ": " + d.Reason
+	case !d.ReplacePassword:
+		return postconfirmation.ActionSkipPassword
 	}
-	slices.Sort(flags)
-	return "allow: " + strings.Join(flags, ", ")
+	return postconfirmation.ActionReplacePassword
 }
 
 // syntheticVerification returns a SendGrid-like result with the verdict.
