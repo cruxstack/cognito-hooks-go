@@ -1,209 +1,124 @@
 # Cognito Hooks
 
-An extensible set of AWS Lambda handlers for [Amazon Cognito triggers](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-working-with-lambda-triggers.html).
-The project is hook-agnostic and currently implements **PreSignUp** and
-**PostConfirmation**, sharing the same core.
+An AWS Lambda function for
+[Amazon Cognito user pool triggers](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-working-with-lambda-triggers.html).
+[Rego](https://www.openpolicyagent.org/docs/policy-language) policies you
+write make each hook's decisions, so you can change who may sign up without
+changing code.
 
-A policy layer (OPA, Rego v1) makes allow/deny decisions and can set Cognito
-response flags. Optionally, policy input is enriched with SendGrid email
-verification data. A local debug runner lets you exercise fixtures without
-real credentials.
+The easiest way to deploy it is the
+[terraform-aws-cognito-hooks](https://github.com/cruxstack/terraform-aws-cognito-hooks)
+module.
+
+## Hooks
+
+| Hook                                       | What it does                                                                                       |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| [PreSignUp](docs/presignup.md)             | Allows or denies each sign-up and sets Cognito's auto-confirm and auto-verify flags. Can check the address with SendGrid first. |
+| [PostConfirmation](docs/postconfirmation.md) | Replaces each newly confirmed user's password with a random one, for passwordless-only user pools. |
+
+One binary serves every hook; each function enables the hooks it handles.
 
 ## Features
 
-* **multi-hook architecture**: common types and helpers live under `internal`;
-  each hook has its own handler and a small `cmd/<hook>/main.go`
-* **policy-based decisions**: custom flows with OPA policies
-* **optional sendgrid verification**: include verdict and score in policy
-  input; trusted domains can be allowlisted to bypass checks
-* **password scramble on confirmation**: the PostConfirmation hook replaces
-  each new native user's password with a random one, so users sign in with
-  passwordless factors only
-* **local debug mode**: run integration tests against fixture events and
-  policies with zero external dependencies
-* **structured logging**: json logs via `slog` with runtime level control
+- **Policy-driven decisions.** Allow, deny, or auto-confirm by email domain,
+  app client, trigger, user attribute, or client metadata.
+- **Email verification** with the SendGrid Email Address Validation API:
+  deny undeliverable and disposable addresses, with an allowlist of trusted
+  domains.
+- **Passwordless enforcement.** Scramble passwords on confirmation and after
+  password resets, so only passwordless factors can sign in.
+- **Safe by default.** Configuration and policies are checked at startup, a
+  broken PreSignUp policy rejects sign-ups instead of letting them through,
+  and logs mask email addresses.
 
-> **Notes**: future hooks may be added using the same pattern (e.g.,
-> PreAuthentication, CustomMessage). Timelines are intentionally unspecified.
+## How it works
 
-## Environment Variables
-
-Configure Lambda or local runs via environment variables. See `.env.sample`
-for a ready-to-copy template.
-
-| Variable                                      | Description                                                  | Default                    |
-| --------------------------------------------- | ------------------------------------------------------------ | -------------------------- |
-| `APP_LOG_LEVEL`                               | log level: `debug`, `info`, `warn`, `error`                  | `info` (or `debug` if dbg) |
-| `APP_DEBUG_ENABLED`                           | enable extra debug logging                                   | `false`                    |
-| `APP_DEBUG_DATA_PATH`                         | path to JSON array of sample events                          | `fixtures/debug-data.json` |
-| `APP_POLICY_PATH`                             | path to Rego policy (v1); optional for PostConfirmation      | **required** (PreSignUp)   |
-| `APP_EMAIL_VERIFICATION_ENABLED`              | enable sendgrid verification                                 | `false`                    |
-| `APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES`  | comma delimited string of triggers to verify                 | `PreSignUp_SignUp`         |
-| `APP_EMAIL_VERIFICATION_WHITELIST`            | comma delimited string of domains to auto-allow (lowercased) | `""`                       |
-| `APP_SENDGRID_API_HOST`                       | sendgrid api base url                                        | `https://api.sendgrid.com` |
-| `APP_SENDGRID_EMAIL_VERIFICATION_API_KEY`     | sendgrid api key                                             | required if verification   |
-
-> note: when `APP_DEBUG_ENABLED=true`, log level is forced to `debug`.
-
-## OPA Policy
-
-The handler queries: `data.cognito_hook_presignup.result`
-
-### Input Shape
-
-```jsonc
-{
-  "trigger": "PreSignUp_SignUp",
-  "callerContext": {
-    "clientId": "local"
-  },
-  "userAttributes": {
-    "email": "user@example.org"
-  },
-  // present only if verification is enabled (or whitelisted)
-  "emailVerification": {
-    "score": 0.97,
-    "valid": true,
-    "disposable": false,
-    "role": false,
-    "raw": "{...sendgrid response...}"
-  }
-}
-````
-
-### Output Shape
-
-```jsonc
-{
-  "action": "allow | deny",
-  "reason": "string (only when deny)",
-  "response": {
-    "autoConfirmUser": true,
-    "autoVerifyEmail": false,
-    "autoVerifyPhone": false
-  }
-}
-```
-
-#### Example Policy
-
-This policy denys on explicit invalid, otherwise allows.
+Cognito calls the function with a trigger event. The function routes it to
+the hook for its trigger source, and the hook evaluates your policy:
 
 ```rego
 package cognito_hook_presignup
+
 import rego.v1
 
-result := deny_result if {
-  input.emailVerification != null
-  input.emailVerification.valid == false
-}
+default result := {"action": "deny", "reason": "Sign-up is limited to example.com addresses."}
 
-result := allow_result if {
-  not deny_result
-}
+result := {"action": "allow"} if endswith(input.userAttributes.email, "@example.com")
+```
 
-allow_result := { "action": "allow", "response": {} }
+A denial's reason is shown to the user. See [policies](docs/policies.md) for
+writing and testing policies, and [`examples/policies`](examples/policies)
+for tested examples.
 
-deny_result := {
-  "action": "deny",
-  "reason": "invalid email address"
-} if {
-  input.emailVerification != null
-  input.emailVerification.valid == false
+## Deploying
+
+### With Terraform
+
+```hcl
+module "cognito_hooks" {
+  source  = "cruxstack/cognito-hooks/aws"
+  version = "~> 2.0" # module v2 runs v1 of this function
+
+  presignup_hook_enabled        = true
+  presignup_hook_policy_content = file("${path.module}/presignup.rego")
 }
 ```
 
-## PostConfirmation Hook
+### By hand
 
-The PostConfirmation hook (`cmd/postconfirmation`) runs after Cognito confirms
-a user and calls `AdminSetUserPassword` with a random 64-character password
-that is never logged or returned. Nobody, including the user, knows the
-password, so the user can only sign in with passwordless factors such as email
-or SMS one-time passwords and passkeys. A random password also means
-`ChangePassword` requires a previous password that the user doesn't have.
+1. Download `bootstrap_linux_arm64.zip` (or `amd64`) from the
+   [latest release](https://github.com/cruxstack/cognito-hooks-go/releases/latest),
+   or build it with `make build`.
+2. Add your policy to the zip: `zip bootstrap_linux_arm64.zip presignup.rego`.
+   (`make package PRESIGNUP_POLICY=presignup.rego` builds and zips in one
+   step.)
+3. Create a Lambda function with the `provided.al2023` runtime, the matching
+   architecture, handler `bootstrap`, and a 5 second timeout. For
+   PostConfirmation, give its role the
+   [IAM permission](docs/configuration.md#iam-permissions).
+4. Set the [environment variables](docs/configuration.md):
 
-| Trigger source                           | When                                     |
-| ---------------------------------------- | ---------------------------------------- |
-| `PostConfirmation_ConfirmSignUp`         | after `ConfirmSignUp` or `AdminConfirmSignUp` |
-| `PostConfirmation_ConfirmForgotPassword` | after a forgotten-password reset         |
-
-Federated users (`cognito:user_status` of `EXTERNAL_PROVIDER`) are skipped.
-The hook never fails the confirmation: Cognito has already confirmed the user,
-so an error is logged as `password scramble failed` instead.
-
-The Lambda execution role needs `cognito-idp:AdminSetUserPassword` on the user
-pool. Use it only with a user pool that allows a passwordless first factor, or
-users won't be able to sign in.
-
-### Optional Policy
-
-Set `APP_POLICY_PATH` to exempt users. The handler queries
-`data.cognito_hook_postconfirmation.result` with the same input shape as
-PreSignUp, without `emailVerification`, and expects:
-
-```jsonc
-{
-  "action": "scramble | skip",
-  "reason": "string (logged when skipped)"
-}
-```
-
-Without a policy, or when the policy fails to evaluate, every native user's
-password is scrambled.
-
-```rego
-package cognito_hook_postconfirmation
-import rego.v1
-
-result := { "action": "skip", "reason": "test client" } if {
-  input.callerContext.clientId == "1example23456789"
-} else := { "action": "scramble" }
-```
-
-## Debug Mode & Local Integration Tests
-
-Use the debug runner to process fixture events with your policy.
-
-1. Copy `.env.sample` to `.env` and adjust values.
-
-2. Run with defaults:
-
-   ```bash
-   make debug
+   ```sh
+   APP_PRESIGNUP_ENABLED=true
+   APP_PRESIGNUP_POLICY_PATH=presignup.rego
    ```
 
-3. Override paths:
+5. Allow `cognito-idp.amazonaws.com` to invoke the function, and set it as
+   the user pool's `PreSignUp` (or `PostConfirmation`) trigger.
 
-   ```bash
-   go run ./cmd/debug \
-     -data ./fixtures/debug-data.json \
-     -policy ./fixtures/debug-policy.rego
-   ```
+## Local development
 
-The runner logs each event’s computed response and any handler error. Fixture
-events live in `fixtures/debug-data.json`.
+Evaluate a policy against sample events, with no AWS access:
 
-## Build and Deploy (Lambda)
-
-Build a Linux binary and zip it for Lambda.
-
-```bash
-GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-  go build -trimpath -ldflags "-s -w" \
-  -o dist/bootstrap ./cmd/presignup # or ./cmd/postconfirmation
-
-touch dist/policy.rego # edit policy
-cd dist && zip presignup.zip bootstrap
+```sh
+go run ./cmd/devtool eval \
+  -presignup-policy examples/policies/presignup/domains.rego \
+  -events examples/events/presignup.json
 ```
 
-Create a Lambda function:
+Run events through the whole function, with your `.env`. Passwords aren't
+changed unless you pass `-live`:
 
-* runtime: `provided.al2023`
-* architecture: `arm64` (or `x86_64` if you built that)
-* handler: `bootstrap` (the binary name)
-* upload `presignup.zip`
-* set environment variables from the table above
-* attach the user pool’s **PreSignup** trigger to this function
+```sh
+cp .env.example .env
+make run
+```
 
-No special IAM permissions are required unless your VPC settings restrict
-egress to SendGrid.
+`make help` lists the other targets; [CONTRIBUTING](CONTRIBUTING.md) covers
+tests and conventions.
+
+## Documentation
+
+| Document                                       | Covers                                                      |
+| ---------------------------------------------- | ----------------------------------------------------------- |
+| [PreSignUp](docs/presignup.md)                 | The PreSignUp hook, its policy, and email verification.     |
+| [PostConfirmation](docs/postconfirmation.md)   | The PostConfirmation hook, its requirements, and its policy. |
+| [Policies](docs/policies.md)                   | Writing and testing policies.                               |
+| [Configuration](docs/configuration.md)         | Environment variables, packaging, IAM, Lambda settings.     |
+| [Architecture](docs/architecture.md)           | Packages, the request flow, failure handling, new hooks.    |
+| [Upgrading to v1](docs/upgrading-to-v1.md)     | Breaking changes from v0.                                   |
+
+## License
+
+[MIT](LICENSE)
