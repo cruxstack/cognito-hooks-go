@@ -25,11 +25,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - name: Bump Version
+      # dry_run only computes the version; the release step creates the tag
+      # after the artifacts build, so a failed build leaves no tag behind
+      - name: Compute Version
         id: tag_version
         uses: mathieudutour/github-tag-action@af99e60ce8132224b8e6ebab5023449fe256ed46 # v7.0.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          dry_run: true
           default_bump: minor
           # a custom rule that matches a commit's type wins over the default
           # "breaking change -> major" rule, so types that carry breaking
@@ -37,6 +40,7 @@ jobs:
           # fix use the default rules, and refactor uses default_bump.
           custom_release_rules: bug:patch:Fixes,chore:patch:Chores,docs:patch:Documentation,test:patch:Tests,ci:patch:Development,dev:patch:Development
       - name: Build Lambda Artifacts
+        if: steps.tag_version.outputs.new_tag != ''
         env:
           VERSION: ${{ steps.tag_version.outputs.new_tag }}
         run: |
@@ -47,9 +51,11 @@ jobs:
           done
           (cd release && sha256sum *.zip > checksums.txt)
       - name: Create Release
+        if: steps.tag_version.outputs.new_tag != ''
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
         with:
           tag: ${{ steps.tag_version.outputs.new_tag }}
+          commit: ${{ github.sha }}
           name: ${{ steps.tag_version.outputs.new_tag }}
           body: ${{ steps.tag_version.outputs.changelog }}
           artifacts: release/*
