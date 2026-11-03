@@ -1,8 +1,8 @@
 # Cognito Hooks
 
 An extensible set of AWS Lambda handlers for [Amazon Cognito triggers](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-working-with-lambda-triggers.html).
-The project is hook-agnostic; **PreSignUp** is implemented first, and the same
-core will be reused for additional hooks over time.
+The project is hook-agnostic and currently implements **PreSignUp** and
+**PostConfirmation**, sharing the same core.
 
 A policy layer (OPA, Rego v1) makes allow/deny decisions and can set Cognito
 response flags. Optionally, policy input is enriched with SendGrid email
@@ -16,13 +16,15 @@ real credentials.
 * **policy-based decisions**: custom flows with OPA policies
 * **optional sendgrid verification**: include verdict and score in policy
   input; trusted domains can be allowlisted to bypass checks
+* **password scramble on confirmation**: the PostConfirmation hook replaces
+  each new native user's password with a random one, so users sign in with
+  passwordless factors only
 * **local debug mode**: run integration tests against fixture events and
   policies with zero external dependencies
 * **structured logging**: json logs via `slog` with runtime level control
 
 > **Notes**: future hooks may be added using the same pattern (e.g.,
-> PostConfirmation, PreAuthentication, CustomMessage). Timelines are
-> intentionally unspecified.
+> PreAuthentication, CustomMessage). Timelines are intentionally unspecified.
 
 ## Environment Variables
 
@@ -34,7 +36,7 @@ for a ready-to-copy template.
 | `APP_LOG_LEVEL`                               | log level: `debug`, `info`, `warn`, `error`                  | `info` (or `debug` if dbg) |
 | `APP_DEBUG_ENABLED`                           | enable extra debug logging                                   | `false`                    |
 | `APP_DEBUG_DATA_PATH`                         | path to JSON array of sample events                          | `fixtures/debug-data.json` |
-| `APP_POLICY_PATH`                             | path to Rego policy (v1)                                     | **required**               |
+| `APP_POLICY_PATH`                             | path to Rego policy (v1); optional for PostConfirmation      | **required** (PreSignUp)   |
 | `APP_EMAIL_VERIFICATION_ENABLED`              | enable sendgrid verification                                 | `false`                    |
 | `APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES`  | comma delimited string of triggers to verify                 | `PreSignUp_SignUp`         |
 | `APP_EMAIL_VERIFICATION_WHITELIST`            | comma delimited string of domains to auto-allow (lowercased) | `""`                       |
@@ -111,6 +113,53 @@ deny_result := {
 }
 ```
 
+## PostConfirmation Hook
+
+The PostConfirmation hook (`cmd/postconfirmation`) runs after Cognito confirms
+a user and calls `AdminSetUserPassword` with a random 64-character password
+that is never logged or returned. Nobody, including the user, knows the
+password, so the user can only sign in with passwordless factors such as email
+or SMS one-time passwords and passkeys. A random password also means
+`ChangePassword` requires a previous password that the user doesn't have.
+
+| Trigger source                           | When                                     |
+| ---------------------------------------- | ---------------------------------------- |
+| `PostConfirmation_ConfirmSignUp`         | after `ConfirmSignUp` or `AdminConfirmSignUp` |
+| `PostConfirmation_ConfirmForgotPassword` | after a forgotten-password reset         |
+
+Federated users (`cognito:user_status` of `EXTERNAL_PROVIDER`) are skipped.
+The hook never fails the confirmation: Cognito has already confirmed the user,
+so an error is logged as `password scramble failed` instead.
+
+The Lambda execution role needs `cognito-idp:AdminSetUserPassword` on the user
+pool. Use it only with a user pool that allows a passwordless first factor, or
+users won't be able to sign in.
+
+### Optional Policy
+
+Set `APP_POLICY_PATH` to exempt users. The handler queries
+`data.cognito_hook_postconfirmation.result` with the same input shape as
+PreSignUp, without `emailVerification`, and expects:
+
+```jsonc
+{
+  "action": "scramble | skip",
+  "reason": "string (logged when skipped)"
+}
+```
+
+Without a policy, or when the policy fails to evaluate, every native user's
+password is scrambled.
+
+```rego
+package cognito_hook_postconfirmation
+import rego.v1
+
+result := { "action": "skip", "reason": "test client" } if {
+  input.callerContext.clientId == "1example23456789"
+} else := { "action": "scramble" }
+```
+
 ## Debug Mode & Local Integration Tests
 
 Use the debug runner to process fixture events with your policy.
@@ -141,7 +190,7 @@ Build a Linux binary and zip it for Lambda.
 ```bash
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
   go build -trimpath -ldflags "-s -w" \
-  -o dist/bootstrap ./cmd/presignup
+  -o dist/bootstrap ./cmd/presignup # or ./cmd/postconfirmation
 
 touch dist/policy.rego # edit policy
 cd dist && zip presignup.zip bootstrap
