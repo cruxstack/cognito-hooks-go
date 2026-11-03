@@ -1,59 +1,233 @@
+// Package config reads the configuration from environment variables. Invalid
+// or contradictory settings are errors, so a misconfigured function fails at
+// startup instead of misbehaving on a user's sign-up.
 package config
 
 import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
+
+	"github.com/cruxstack/cognito-hooks-go/internal/presignup"
+	"github.com/cruxstack/cognito-hooks-go/internal/sendgrid"
 )
 
+// Config is the function's configuration.
 type Config struct {
-	AppLogLevel                        string
-	AppPolicyPath                      string
-	DebugEnabled                       bool
-	DebugDataPath                      string
-	EmailVerificationEnabled           bool
-	EmailVerificationForTriggerSources *[]string
-	EmailVerificationWhitelist         *[]string
-	SendGridApiHost                    string
-	SendGridEmailVerificationApiKey    string
+	LogLevel slog.Level
+
+	PreSignUp         PreSignUp
+	PostConfirmation  PostConfirmation
+	EmailVerification EmailVerification
+	SendGrid          SendGrid
 }
 
-func New() (*Config, error) {
-	cfg := &Config{
-		AppLogLevel:                     os.Getenv("APP_LOG_LEVEL"),
-		AppPolicyPath:                   os.Getenv("APP_POLICY_PATH"),
-		DebugEnabled:                    os.Getenv("APP_DEBUG_ENABLED") == "true",
-		DebugDataPath:                   os.Getenv("APP_DEBUG_DATA_PATH"),
-		EmailVerificationEnabled:        os.Getenv("APP_EMAIL_VERIFICATION_ENABLED") == "true",
-		SendGridApiHost:                 os.Getenv("APP_SENDGRID_API_HOST"),
-		SendGridEmailVerificationApiKey: os.Getenv("APP_SENDGRID_EMAIL_VERIFICATION_API_KEY"),
-	}
+// PreSignUp configures the PreSignUp hook.
+type PreSignUp struct {
+	Enabled    bool
+	PolicyPath string
+}
 
-	evWhitelistStr := strings.TrimSpace(os.Getenv("APP_EMAIL_VERIFICATION_WHITELIST"))
-	if evWhitelistStr != "" {
-		evWhitelist := strings.Split(evWhitelistStr, ",")
-		for i, x := range evWhitelist {
-			evWhitelist[i] = strings.ToLower(strings.TrimSpace(x))
+// PostConfirmation configures the PostConfirmation hook.
+type PostConfirmation struct {
+	Enabled bool
+	// PolicyPath is optional; without a policy every native user's password
+	// is scrambled.
+	PolicyPath string
+}
+
+// EmailVerification configures email verification for the PreSignUp hook.
+type EmailVerification struct {
+	Enabled bool
+	// Triggers are the PreSignUp trigger sources to verify addresses for.
+	Triggers []string
+	// Allowlist holds domains that are treated as valid without calling
+	// SendGrid.
+	Allowlist []string
+}
+
+// SendGrid holds the SendGrid API settings.
+type SendGrid struct {
+	APIHost            string
+	VerificationAPIKey string
+}
+
+// removed lists variables from v0 that are no longer read, with what to use
+// instead. Setting one is an error so an old configuration can't silently
+// change behavior.
+var removed = map[string]string{
+	"APP_POLICY_PATH":                  "APP_PRESIGNUP_POLICY_PATH or APP_POSTCONFIRMATION_POLICY_PATH, with APP_PRESIGNUP_ENABLED or APP_POSTCONFIRMATION_ENABLED",
+	"APP_DEBUG_ENABLED":                "APP_LOG_LEVEL=debug, and the devtool CLI for local runs",
+	"APP_DEBUG_DATA_PATH":              "the devtool -events flag",
+	"APP_EMAIL_VERIFICATION_WHITELIST": "APP_EMAIL_VERIFICATION_ALLOWLIST",
+}
+
+// FromEnv reads the configuration from the process environment.
+func FromEnv() (*Config, error) {
+	return Load(os.LookupEnv)
+}
+
+// Load reads the configuration with lookup, which has the signature of
+// os.LookupEnv. All problems are reported together.
+func Load(lookup func(string) (string, bool)) (*Config, error) {
+	r := reader{lookup: lookup}
+
+	for _, key := range slices.Sorted(maps.Keys(removed)) {
+		if r.str(key) != "" {
+			r.fail(fmt.Errorf("%s was removed in v1: use %s", key, removed[key]))
 		}
-		cfg.EmailVerificationWhitelist = &evWhitelist
 	}
 
-	evTriggerSourcesStr := strings.TrimSpace(os.Getenv("APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES"))
-	if evTriggerSourcesStr == "" {
-		evTriggerSourcesStr = "PreSignUp_SignUp"
+	cfg := &Config{
+		LogLevel: r.level("APP_LOG_LEVEL", slog.LevelInfo),
+		PreSignUp: PreSignUp{
+			Enabled:    r.boolean("APP_PRESIGNUP_ENABLED", false),
+			PolicyPath: r.str("APP_PRESIGNUP_POLICY_PATH"),
+		},
+		PostConfirmation: PostConfirmation{
+			Enabled:    r.boolean("APP_POSTCONFIRMATION_ENABLED", false),
+			PolicyPath: r.str("APP_POSTCONFIRMATION_POLICY_PATH"),
+		},
+		EmailVerification: EmailVerification{
+			Enabled:   r.boolean("APP_EMAIL_VERIFICATION_ENABLED", false),
+			Triggers:  r.list("APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES", []string{presignup.TriggerSignUp}),
+			Allowlist: lower(r.list("APP_EMAIL_VERIFICATION_ALLOWLIST", nil)),
+		},
+		SendGrid: SendGrid{
+			APIHost:            r.strOr("APP_SENDGRID_API_HOST", sendgrid.DefaultBaseURL),
+			VerificationAPIKey: r.str("APP_SENDGRID_EMAIL_VERIFICATION_API_KEY"),
+		},
 	}
-	evTriggerSources := strings.Split(evTriggerSourcesStr, ",")
-	for i, x := range evTriggerSources {
-		evTriggerSources[i] = strings.TrimSpace(x)
-	}
-	cfg.EmailVerificationForTriggerSources = &evTriggerSources
 
-	if cfg.SendGridApiHost == "" {
-		cfg.SendGridApiHost = "https://api.sendgrid.com"
+	r.errs = append(r.errs, cfg.validate()...)
+	if len(r.errs) > 0 {
+		return nil, fmt.Errorf("invalid configuration:\n  %w", joinIndented(r.errs))
 	}
-
-	if cfg.DebugEnabled {
-		cfg.AppLogLevel = "debug"
-	}
-
 	return cfg, nil
+}
+
+func (c *Config) validate() []error {
+	var errs []error
+	req := func(ok bool, msg string) {
+		if !ok {
+			errs = append(errs, errors.New(msg))
+		}
+	}
+
+	req(c.PreSignUp.Enabled || c.PostConfirmation.Enabled,
+		"at least one of APP_PRESIGNUP_ENABLED or APP_POSTCONFIRMATION_ENABLED must be true")
+
+	if c.PreSignUp.Enabled {
+		req(c.PreSignUp.PolicyPath != "", "APP_PRESIGNUP_POLICY_PATH is required when APP_PRESIGNUP_ENABLED is true")
+
+		// verification only applies to PreSignUp, so its settings are only
+		// checked when that hook is enabled
+		if v := c.EmailVerification; v.Enabled {
+			req(c.SendGrid.VerificationAPIKey != "",
+				"APP_SENDGRID_EMAIL_VERIFICATION_API_KEY is required when APP_EMAIL_VERIFICATION_ENABLED is true")
+			for _, t := range v.Triggers {
+				if !slices.Contains(presignup.Triggers, t) {
+					errs = append(errs, fmt.Errorf("APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES: unknown trigger source %q: must be one of %v", t, presignup.Triggers))
+				}
+			}
+		}
+	}
+
+	if !strings.HasPrefix(c.SendGrid.APIHost, "https://") && !strings.HasPrefix(c.SendGrid.APIHost, "http://") {
+		errs = append(errs, fmt.Errorf("APP_SENDGRID_API_HOST: %q must be a URL such as %s", c.SendGrid.APIHost, sendgrid.DefaultBaseURL))
+	}
+
+	return errs
+}
+
+// reader parses environment variables and collects errors.
+type reader struct {
+	lookup func(string) (string, bool)
+	errs   []error
+}
+
+func (r *reader) fail(err error) {
+	r.errs = append(r.errs, err)
+}
+
+// str returns the trimmed value of key, or "" when unset.
+func (r *reader) str(key string) string {
+	v, _ := r.lookup(key)
+	return strings.TrimSpace(v)
+}
+
+// strOr returns the value of key, or def when unset or empty.
+func (r *reader) strOr(key, def string) string {
+	if v := r.str(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func (r *reader) boolean(key string, def bool) bool {
+	s := r.str(key)
+	if s == "" {
+		return def
+	}
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		r.fail(fmt.Errorf("%s: %q is not a boolean (use true or false)", key, s))
+		return def
+	}
+	return v
+}
+
+func (r *reader) level(key string, def slog.Level) slog.Level {
+	s := r.str(key)
+	if s == "" {
+		return def
+	}
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	}
+	r.fail(fmt.Errorf("%s: %q must be one of debug, info, warn, or error", key, s))
+	return def
+}
+
+// list splits a comma-separated value into trimmed items. It returns def
+// when the variable is unset or has no items.
+func (r *reader) list(key string, def []string) []string {
+	var out []string
+	for item := range strings.SplitSeq(r.str(key), ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	if len(out) == 0 {
+		return def
+	}
+	return out
+}
+
+func lower(items []string) []string {
+	for i, s := range items {
+		items[i] = strings.ToLower(s)
+	}
+	return items
+}
+
+// joinIndented joins errors one per line for a readable startup error.
+func joinIndented(errs []error) error {
+	msgs := make([]string, len(errs))
+	for i, err := range errs {
+		msgs[i] = err.Error()
+	}
+	return errors.New(strings.Join(msgs, "\n  "))
 }

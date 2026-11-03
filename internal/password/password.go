@@ -1,3 +1,5 @@
+// Package password generates random passwords that satisfy any Cognito
+// password policy.
 package password
 
 import (
@@ -7,9 +9,10 @@ import (
 )
 
 const (
-	lower   = "abcdefghijklmnopqrstuvwxyz"
-	upper   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	digits  = "0123456789"
+	lower  = "abcdefghijklmnopqrstuvwxyz"
+	upper  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	digits = "0123456789"
+	// symbols are all in Cognito's set of allowed special characters
 	symbols = "!@#$%^&*()-_=+[]{}<>?"
 )
 
@@ -17,7 +20,7 @@ var classes = []string{lower, upper, digits, symbols}
 
 // Generate returns a random password of the given length that contains at
 // least one lowercase letter, uppercase letter, digit, and symbol, so it meets
-// any Cognito password policy that the length satisfies.
+// any Cognito password policy whose minimum length is at most length.
 func Generate(length int) (string, error) {
 	if length < len(classes) {
 		return "", errors.New("password length must cover every character class")
