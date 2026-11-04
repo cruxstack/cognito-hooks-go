@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func load(vars map[string]string) (*Config, error) {
@@ -37,16 +38,22 @@ func TestLoad_Defaults(t *testing.T) {
 
 func TestLoad_Everything(t *testing.T) {
 	cfg, err := load(map[string]string{
-		"APP_LOG_LEVEL":                              "DEBUG",
-		"APP_PRESIGNUP_ENABLED":                      "true",
-		"APP_PRESIGNUP_POLICY_PATH":                  " presignup.rego ",
-		"APP_POSTCONFIRMATION_ENABLED":               "1",
-		"APP_POSTCONFIRMATION_POLICY_PATH":           "postconfirmation.rego",
-		"APP_EMAIL_VERIFICATION_ENABLED":             "true",
-		"APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES": "PreSignUp_SignUp, PreSignUp_AdminCreateUser,",
-		"APP_EMAIL_VERIFICATION_ALLOWLIST":           "Example.com, internal.test",
-		"APP_SENDGRID_API_HOST":                      "https://api.eu.sendgrid.com",
-		"APP_SENDGRID_EMAIL_VERIFICATION_API_KEY":    "SG.key",
+		"APP_LOG_LEVEL":                                   "DEBUG",
+		"APP_PRESIGNUP_ENABLED":                           "true",
+		"APP_PRESIGNUP_POLICY_PATH":                       " presignup.rego ",
+		"APP_POSTCONFIRMATION_ENABLED":                    "1",
+		"APP_POSTCONFIRMATION_POLICY_PATH":                "postconfirmation.rego",
+		"APP_POSTCONFIRMATION_ROTATION_TABLE":             "rotations",
+		"APP_PREAUTHENTICATION_ENABLED":                   "true",
+		"APP_PREAUTHENTICATION_POLICY_PATH":               "preauthentication.rego",
+		"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "true",
+		"APP_PREAUTHENTICATION_ROTATE_BEFORE":             "2026-11-01T00:00:00-05:00",
+		"APP_PREAUTHENTICATION_ROTATION_TABLE":            "rotations",
+		"APP_EMAIL_VERIFICATION_ENABLED":                  "true",
+		"APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES":      "PreSignUp_SignUp, PreSignUp_AdminCreateUser,",
+		"APP_EMAIL_VERIFICATION_ALLOWLIST":                "Example.com, internal.test",
+		"APP_SENDGRID_API_HOST":                           "https://api.eu.sendgrid.com",
+		"APP_SENDGRID_EMAIL_VERIFICATION_API_KEY":         "SG.key",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +61,16 @@ func TestLoad_Everything(t *testing.T) {
 	want := &Config{
 		LogLevel:         slog.LevelDebug,
 		PreSignUp:        PreSignUp{Enabled: true, PolicyPath: "presignup.rego"},
-		PostConfirmation: PostConfirmation{Enabled: true, PolicyPath: "postconfirmation.rego"},
+		PostConfirmation: PostConfirmation{Enabled: true, PolicyPath: "postconfirmation.rego", RotationTable: "rotations"},
+		PreAuthentication: PreAuthentication{
+			Enabled:    true,
+			PolicyPath: "preauthentication.rego",
+			PasswordRotation: PasswordRotation{
+				Enabled:      true,
+				RotateBefore: time.Date(2026, 11, 1, 5, 0, 0, 0, time.UTC),
+				Table:        "rotations",
+			},
+		},
 		EmailVerification: EmailVerification{
 			Enabled:   true,
 			Triggers:  []string{"PreSignUp_SignUp", "PreSignUp_AdminCreateUser"},
@@ -62,6 +78,11 @@ func TestLoad_Everything(t *testing.T) {
 		},
 		SendGrid: SendGrid{APIHost: "https://api.eu.sendgrid.com", VerificationAPIKey: "SG.key"},
 	}
+	got, wantCutoff := cfg.PreAuthentication.PasswordRotation.RotateBefore, want.PreAuthentication.PasswordRotation.RotateBefore
+	if !got.Equal(wantCutoff) {
+		t.Errorf("rotate before = %v, want %v", got, wantCutoff)
+	}
+	cfg.PreAuthentication.PasswordRotation.RotateBefore = wantCutoff
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("config =\n  %+v\nwant\n  %+v", cfg, want)
 	}
@@ -97,7 +118,42 @@ func TestLoad_Errors(t *testing.T) {
 	}{
 		"nothing enabled": {
 			vars: map[string]string{},
-			want: []string{"at least one of APP_PRESIGNUP_ENABLED or APP_POSTCONFIRMATION_ENABLED must be true"},
+			want: []string{"at least one of APP_PRESIGNUP_ENABLED, APP_POSTCONFIRMATION_ENABLED, or APP_PREAUTHENTICATION_ENABLED must be true"},
+		},
+		"password rotation without a cutoff or table": {
+			vars: map[string]string{
+				"APP_PREAUTHENTICATION_ENABLED":                   "true",
+				"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "true",
+			},
+			want: []string{
+				"APP_PREAUTHENTICATION_ROTATION_TABLE is required when APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED is true",
+				"APP_PREAUTHENTICATION_ROTATE_BEFORE is required when APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED is true",
+			},
+		},
+		"password rotation with an invalid cutoff": {
+			vars: map[string]string{
+				"APP_PREAUTHENTICATION_ENABLED":                   "true",
+				"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "true",
+				"APP_PREAUTHENTICATION_ROTATE_BEFORE":             "2026-11-01",
+				"APP_PREAUTHENTICATION_ROTATION_TABLE":            "rotations",
+			},
+			want: []string{`APP_PREAUTHENTICATION_ROTATE_BEFORE: "2026-11-01" is not an RFC 3339 timestamp`},
+		},
+		"password rotation with a cutoff in the future": {
+			vars: map[string]string{
+				"APP_PREAUTHENTICATION_ENABLED":                   "true",
+				"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "true",
+				"APP_PREAUTHENTICATION_ROTATE_BEFORE":             "2999-01-01T00:00:00Z",
+				"APP_PREAUTHENTICATION_ROTATION_TABLE":            "rotations",
+			},
+			want: []string{"APP_PREAUTHENTICATION_ROTATE_BEFORE: 2999-01-01T00:00:00Z is in the future"},
+		},
+		"invalid password rotation flag": {
+			vars: map[string]string{
+				"APP_PREAUTHENTICATION_ENABLED":                   "true",
+				"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "on",
+			},
+			want: []string{`APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED: "on" is not a boolean`},
 		},
 		"presignup without a policy": {
 			vars: map[string]string{"APP_PRESIGNUP_ENABLED": "true"},
@@ -175,6 +231,53 @@ func TestSecureURL(t *testing.T) {
 		if got := secureURL(in); got != want {
 			t.Errorf("secureURL(%q) = %v, want %v", in, got, want)
 		}
+	}
+}
+
+// Password rotation is off by default, so the hook needs no other setting.
+func TestLoad_PreAuthenticationDefaults(t *testing.T) {
+	cfg, err := load(map[string]string{"APP_PREAUTHENTICATION_ENABLED": "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (PreAuthentication{Enabled: true}); !reflect.DeepEqual(cfg.PreAuthentication, want) {
+		t.Errorf("pre authentication = %+v, want %+v", cfg.PreAuthentication, want)
+	}
+}
+
+// Turning password rotation off doesn't depend on its other settings, such
+// as a cutoff that would otherwise be rejected.
+func TestLoad_PasswordRotationSettingsAreIgnoredWhenOff(t *testing.T) {
+	cfg, err := load(map[string]string{
+		"APP_PREAUTHENTICATION_ENABLED":                   "true",
+		"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "false",
+		"APP_PREAUTHENTICATION_ROTATE_BEFORE":             "2999-01-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if cfg.PreAuthentication.PasswordRotation.Enabled {
+		t.Error("password rotation should be off")
+	}
+}
+
+// The cutoff only has to have passed when the function starts.
+func TestLoad_CutoffIsComparedWithTheCurrentTime(t *testing.T) {
+	vars := map[string]string{
+		"APP_PREAUTHENTICATION_ENABLED":                   "true",
+		"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "true",
+		"APP_PREAUTHENTICATION_ROTATE_BEFORE":             "2030-01-01T00:00:00Z",
+		"APP_PREAUTHENTICATION_ROTATION_TABLE":            "rotations",
+	}
+	t.Cleanup(func() { now = time.Now })
+
+	now = func() time.Time { return time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC) }
+	if _, err := load(vars); err == nil {
+		t.Error("expected an error for a cutoff in the future")
+	}
+	now = func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) }
+	if _, err := load(vars); err != nil {
+		t.Errorf("Load() = %v, want the cutoff accepted once it has passed", err)
 	}
 }
 

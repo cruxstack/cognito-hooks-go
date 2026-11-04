@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cruxstack/cognito-hooks-go/internal/presignup"
 	"github.com/cruxstack/cognito-hooks-go/internal/sendgrid"
@@ -25,6 +26,7 @@ type Config struct {
 
 	PreSignUp         PreSignUp
 	PostConfirmation  PostConfirmation
+	PreAuthentication PreAuthentication
 	EmailVerification EmailVerification
 	SendGrid          SendGrid
 }
@@ -41,6 +43,29 @@ type PostConfirmation struct {
 	// PolicyPath is optional; without a policy every native user's password
 	// is replaced.
 	PolicyPath string
+	// RotationTable is optional. When set, each replacement is recorded in
+	// the table of the PreAuthentication hook's password rotation.
+	RotationTable string
+}
+
+// PreAuthentication configures the PreAuthentication hook.
+type PreAuthentication struct {
+	Enabled bool
+	// PolicyPath is optional.
+	PolicyPath string
+	// PasswordRotation is off by default.
+	PasswordRotation PasswordRotation
+}
+
+// PasswordRotation configures the PreAuthentication hook's password
+// rotation. Its settings are only required when it is enabled.
+type PasswordRotation struct {
+	Enabled bool
+	// RotateBefore is the cutoff: a password the hooks haven't replaced
+	// since this time is replaced at the user's next sign-in.
+	RotateBefore time.Time
+	// Table is the DynamoDB table that records each replacement.
+	Table string
 }
 
 // EmailVerification configures email verification for the PreSignUp hook.
@@ -69,6 +94,9 @@ var removed = map[string]string{
 	"APP_EMAIL_VERIFICATION_WHITELIST": "APP_EMAIL_VERIFICATION_ALLOWLIST",
 }
 
+// now returns the current time; tests replace it.
+var now = time.Now
+
 // FromEnv reads the configuration from the process environment.
 func FromEnv() (*Config, error) {
 	return Load(os.LookupEnv)
@@ -88,15 +116,25 @@ func Load(lookup func(string) (string, bool)) (*Config, error) {
 	cfg := &Config{
 		LogLevel: r.level("APP_LOG_LEVEL", slog.LevelInfo),
 		PreSignUp: PreSignUp{
-			Enabled:    r.boolean("APP_PRESIGNUP_ENABLED", false),
+			Enabled:    r.boolean("APP_PRESIGNUP_ENABLED"),
 			PolicyPath: r.str("APP_PRESIGNUP_POLICY_PATH"),
 		},
 		PostConfirmation: PostConfirmation{
-			Enabled:    r.boolean("APP_POSTCONFIRMATION_ENABLED", false),
-			PolicyPath: r.str("APP_POSTCONFIRMATION_POLICY_PATH"),
+			Enabled:       r.boolean("APP_POSTCONFIRMATION_ENABLED"),
+			PolicyPath:    r.str("APP_POSTCONFIRMATION_POLICY_PATH"),
+			RotationTable: r.str("APP_POSTCONFIRMATION_ROTATION_TABLE"),
+		},
+		PreAuthentication: PreAuthentication{
+			Enabled:    r.boolean("APP_PREAUTHENTICATION_ENABLED"),
+			PolicyPath: r.str("APP_PREAUTHENTICATION_POLICY_PATH"),
+			PasswordRotation: PasswordRotation{
+				Enabled:      r.boolean("APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED"),
+				RotateBefore: r.timestamp("APP_PREAUTHENTICATION_ROTATE_BEFORE"),
+				Table:        r.str("APP_PREAUTHENTICATION_ROTATION_TABLE"),
+			},
 		},
 		EmailVerification: EmailVerification{
-			Enabled:   r.boolean("APP_EMAIL_VERIFICATION_ENABLED", false),
+			Enabled:   r.boolean("APP_EMAIL_VERIFICATION_ENABLED"),
 			Triggers:  r.list("APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES", []string{presignup.TriggerSignUp}),
 			Allowlist: lower(r.list("APP_EMAIL_VERIFICATION_ALLOWLIST", nil)),
 		},
@@ -121,8 +159,8 @@ func (c *Config) validate() []error {
 		}
 	}
 
-	req(c.PreSignUp.Enabled || c.PostConfirmation.Enabled,
-		"at least one of APP_PRESIGNUP_ENABLED or APP_POSTCONFIRMATION_ENABLED must be true")
+	req(c.PreSignUp.Enabled || c.PostConfirmation.Enabled || c.PreAuthentication.Enabled,
+		"at least one of APP_PRESIGNUP_ENABLED, APP_POSTCONFIRMATION_ENABLED, or APP_PREAUTHENTICATION_ENABLED must be true")
 
 	if c.PreSignUp.Enabled {
 		req(c.PreSignUp.PolicyPath != "", "APP_PRESIGNUP_POLICY_PATH is required when APP_PRESIGNUP_ENABLED is true")
@@ -137,6 +175,21 @@ func (c *Config) validate() []error {
 					errs = append(errs, fmt.Errorf("APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES: unknown trigger source %q: must be one of %v", t, presignup.Triggers))
 				}
 			}
+		}
+	}
+
+	// password rotation's settings are required, and the cutoff's age is
+	// checked, only when it is enabled, so it can be turned off on its own
+	if r := c.PreAuthentication.PasswordRotation; c.PreAuthentication.Enabled && r.Enabled {
+		req(r.Table != "", "APP_PREAUTHENTICATION_ROTATION_TABLE is required when APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED is true")
+		switch {
+		case r.RotateBefore.IsZero():
+			req(false, "APP_PREAUTHENTICATION_ROTATE_BEFORE is required when APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED is true")
+		case r.RotateBefore.After(now()):
+			// every replacement would be before the cutoff, so every sign-in
+			// would replace the password again until the cutoff passes
+			errs = append(errs, fmt.Errorf("APP_PREAUTHENTICATION_ROTATE_BEFORE: %s is in the future: use a time that has passed, such as when the passwords were exposed",
+				r.RotateBefore.Format(time.RFC3339)))
 		}
 	}
 
@@ -190,17 +243,33 @@ func (r *reader) strOr(key, def string) string {
 	return def
 }
 
-func (r *reader) boolean(key string, def bool) bool {
+// boolean parses a boolean. It returns false when the variable is unset.
+func (r *reader) boolean(key string) bool {
 	s := r.str(key)
 	if s == "" {
-		return def
+		return false
 	}
 	v, err := strconv.ParseBool(s)
 	if err != nil {
 		r.fail(fmt.Errorf("%s: %q is not a boolean (use true or false)", key, s))
-		return def
+		return false
 	}
 	return v
+}
+
+// timestamp parses an RFC 3339 timestamp, such as 2026-11-01T00:00:00Z. It
+// returns the zero time when the variable is unset.
+func (r *reader) timestamp(key string) time.Time {
+	s := r.str(key)
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		r.fail(fmt.Errorf("%s: %q is not an RFC 3339 timestamp such as 2026-11-01T00:00:00Z", key, s))
+		return time.Time{}
+	}
+	return t
 }
 
 func (r *reader) level(key string, def slog.Level) slog.Level {

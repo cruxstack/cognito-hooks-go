@@ -16,6 +16,7 @@ module.
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
 | [PreSignUp](docs/presignup.md)             | Allows or denies each sign-up and sets Cognito's auto-confirm and auto-verify flags. Can check the address with SendGrid first. |
 | [PostConfirmation](docs/postconfirmation.md) | Replaces the password of each user who confirms their sign-up or resets their password with a random one, for passwordless-only user pools. |
+| [PreAuthentication](docs/preauthentication.md) | Runs at each sign-in and carries out the features you enable. Opt-in password rotation replaces a password the hooks haven't replaced since a cutoff time with a random one, so passwords exposed before then stop working. |
 
 One binary serves every hook; each function enables the hooks it handles.
 
@@ -30,10 +31,13 @@ One binary serves every hook; each function enables the hooks it handles.
   domains.
 - **Passwordless enforcement.** Replace passwords with random ones on
   confirmation and after password resets, so only passwordless factors can
-  sign in.
+  sign in, and optionally replace existing users' passwords at their next
+  sign-in after a cutoff, one user at a time.
 - **Safe by default.** Configuration and policies are checked at startup, a
   broken PreSignUp policy rejects sign-ups instead of letting them through,
-  and logs mask email addresses.
+  PreAuthentication's password rotation is off until enabled and rejects a
+  sign-in rather than let an old password be checked, and logs mask email
+  addresses.
 
 ## How it works
 
@@ -84,8 +88,10 @@ module "cognito_hooks" {
    step.)
 3. Create a Lambda function with the `provided.al2023` runtime, the matching
    architecture, handler `bootstrap`, and a 5 second timeout. For
-   PostConfirmation, give its role the
-   [IAM permission](docs/configuration.md#iam-permissions).
+   PostConfirmation and PreAuthentication's password rotation, give its role
+   the [IAM permissions](docs/configuration.md#iam-permissions), and for
+   password rotation create its DynamoDB
+   [rotation table](docs/preauthentication.md#rotation-records).
 4. Set the [environment variables](docs/configuration.md):
 
    ```sh
@@ -94,7 +100,8 @@ module "cognito_hooks" {
    ```
 
 5. Allow `cognito-idp.amazonaws.com` to invoke the function, and set it as
-   the user pool's `PreSignUp` (or `PostConfirmation`) trigger.
+   the user pool's `PreSignUp` (or `PostConfirmation`, or
+   `PreAuthentication`) trigger.
 
 ## Local development
 
@@ -123,6 +130,7 @@ tests and conventions.
 | ---------------------------------------------- | ----------------------------------------------------------- |
 | [PreSignUp](docs/presignup.md)                 | The PreSignUp hook, its policy, and email verification.     |
 | [PostConfirmation](docs/postconfirmation.md)   | The PostConfirmation hook, its requirements, and its policy. |
+| [PreAuthentication](docs/preauthentication.md) | The PreAuthentication hook, its policy, and its password rotation: the cutoff, the rotation table, and what is unverified. |
 | [Policies](docs/policies.md)                   | Writing and testing policies.                               |
 | [Configuration](docs/configuration.md)         | Environment variables, packaging, IAM, Lambda settings.     |
 | [Architecture](docs/architecture.md)           | Packages, the request flow, failure handling, new hooks.    |

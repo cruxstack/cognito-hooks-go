@@ -29,7 +29,7 @@ docs/               user documentation
 - `make test` runs everything with the race detector.
 - `make test-e2e` runs the end-to-end tests. They build the function with
   `app.New` from environment-style configuration and replace only the
-  Cognito API and the SendGrid API. Prefer adding an end-to-end test for
+  Cognito, DynamoDB, and SendGrid APIs. Prefer adding an end-to-end test for
   behavior a user would notice.
 - `make test-policies` runs every example policy through its hook against
   the sample events, and runs their Rego unit tests. A new example policy

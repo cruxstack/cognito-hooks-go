@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -64,6 +66,14 @@ func TestEval(t *testing.T) {
 			args: []string{"-events", examples + "events/postconfirmation.json"},
 			want: []string{"password.replace", "password.replace", "password.skip: federated user", "password.replace"},
 		},
+		"preauthentication": {
+			args: []string{"-preauthentication-policy", examples + "policies/preauthentication/skip-users.rego", "-events", examples + "events/preauthentication.json"},
+			want: []string{"password.replace", "password.skip: federated user", "password.skip: unconfirmed user", "password.skip: user not found", "password.skip: end-to-end test user", "password.skip: end-to-end test user"},
+		},
+		"preauthentication without a policy": {
+			args: []string{"-events", examples + "events/preauthentication.json"},
+			want: []string{"password.replace", "password.skip: federated user", "password.skip: unconfirmed user", "password.skip: user not found", "password.replace", "password.replace"},
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -75,6 +85,19 @@ func TestEval(t *testing.T) {
 				t.Errorf("outcomes =\n  %q\nwant\n  %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// eval can't look up a status the event lacks, so it says what the hook does.
+func TestEval_PreAuthenticationWithoutAStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.json")
+	event := `{"triggerSource": "PreAuthentication_Authentication", "userName": "emma", "request": {"userAttributes": {"email": "emma@example.com"}}}`
+	if err := os.WriteFile(path, []byte(event), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := outcomes(t, "-events", path)
+	if err != nil || len(got) != 1 || !strings.Contains(got[0], "unless AdminGetUser finds a federated or unconfirmed user") {
+		t.Errorf("outcomes = %q, %v", got, err)
 	}
 }
 
@@ -98,6 +121,10 @@ func TestRun(t *testing.T) {
 	t.Setenv("APP_PRESIGNUP_ENABLED", "true")
 	t.Setenv("APP_PRESIGNUP_POLICY_PATH", examples+"policies/presignup/domains.rego")
 	t.Setenv("APP_POSTCONFIRMATION_ENABLED", "true")
+	t.Setenv("APP_PREAUTHENTICATION_ENABLED", "true")
+	t.Setenv("APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED", "true")
+	t.Setenv("APP_PREAUTHENTICATION_ROTATE_BEFORE", "2026-11-01T00:00:00Z")
+	t.Setenv("APP_PREAUTHENTICATION_ROTATION_TABLE", "rotations")
 
 	var out bytes.Buffer
 	if err := runCmd(context.Background(), []string{"-env", "", "-events", examples + "events/presignup.json"}, &out); err != nil {
@@ -114,6 +141,14 @@ func TestRun(t *testing.T) {
 	}
 	if results := decode[runResult](t, &out); len(results) != 4 || results[0].Error != "" {
 		t.Errorf("results = %+v", results)
+	}
+
+	out.Reset()
+	if err := runCmd(context.Background(), []string{"-env", "", "-events", examples + "events/preauthentication.json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if results := decode[runResult](t, &out); len(results) != 6 || results[0].Response == nil {
+		t.Errorf("results = %+v, want every sign-in allowed", results)
 	}
 }
 

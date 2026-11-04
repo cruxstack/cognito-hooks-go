@@ -9,6 +9,7 @@ write. The policy receives the Cognito event as `input` and defines a
 | ------------------------------------- | ---------------------------------- | -------------------------------- | -------- |
 | [PreSignUp](presignup.md)             | `APP_PRESIGNUP_POLICY_PATH`        | `cognito_hook_presignup`         | yes      |
 | [PostConfirmation](postconfirmation.md) | `APP_POSTCONFIRMATION_POLICY_PATH` | `cognito_hook_postconfirmation` | no       |
+| [PreAuthentication](preauthentication.md) | `APP_PREAUTHENTICATION_POLICY_PATH` | `cognito_hook_preauthentication` | no    |
 
 The hook pages describe each input and the actions each hook accepts. The
 [`examples/policies`](../examples/policies) directory has complete, tested
@@ -47,7 +48,7 @@ A policy's result is a list of actions:
 - **Unknown actions and parameters make the result invalid,** including
   another hook's actions and misspelled parameters. An invalid result is
   handled like a failed policy: the sign-up is rejected, or the
-  PostConfirmation hook applies its default actions.
+  PostConfirmation and PreAuthentication hooks apply their default actions.
 
 New actions are added as new names, so a policy written today keeps working
 when a hook learns more actions.
@@ -76,7 +77,8 @@ actions contains {"action": "signup.deny", "reason": "Sign-up is closed for this
 ## Writing robust policies
 
 - **Always define a result.** An undefined result is an error, which
-  rejects a sign-up or, for PostConfirmation, applies the default actions.
+  rejects a sign-up or, for PostConfirmation and PreAuthentication, applies
+  the default actions.
   `result := {"actions": actions}` is always defined, even when no
   `actions` rule matches.
 
@@ -122,6 +124,7 @@ fails if any event does. Useful flags:
 | Flag                       | Effect                                                                         |
 | -------------------------- | ------------------------------------------------------------------------------ |
 | `-postconfirmation-policy` | The PostConfirmation policy, for `PostConfirmation_*` events.                  |
+| `-preauthentication-policy` | The PreAuthentication policy, for `PreAuthentication_*` events. Outcomes assume password rotation is enabled. eval reads no rotation records, so `passwordReplacedAt` is `null` and `password.replace` means the hook replaces the password if it is stale. |
 | `-verdict Invalid`         | Gives PreSignUp events a SendGrid result with this verdict (`Valid`, `Risky`, `Invalid`). |
 | `-verify-triggers`         | The trigger sources `-verdict` applies to; `PreSignUp_SignUp` by default.      |
 | `-show-input`              | Prints the exact policy input for each event.                                  |

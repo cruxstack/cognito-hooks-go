@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	cip "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"github.com/cruxstack/cognito-hooks-go/internal/app"
 	"github.com/cruxstack/cognito-hooks-go/internal/config"
@@ -34,7 +35,7 @@ func runCmd(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	eventsPath := fs.String("events", "", "JSON file with an event or an array of events (required)")
 	envFile := fs.String("env", ".env", "dotenv file to load; variables already set take precedence")
-	live := fs.Bool("live", false, "call Cognito AdminSetUserPassword for real, which changes the users' passwords")
+	live := fs.Bool("live", false, "call Cognito and DynamoDB for real: AdminSetUserPassword changes the users' passwords, and the rotation table is read and written")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -67,7 +68,7 @@ func runCmd(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 	} else {
-		opts = append(opts, app.WithCognitoClient(dryRunCognito{}))
+		opts = append(opts, app.WithCognitoClient(dryRunCognito{}), app.WithDynamoDBClient(dryRunDynamoDB{}))
 	}
 
 	h, err := app.New(ctx, cfg, awsCfg, opts...)
@@ -113,10 +114,29 @@ func runCmd(ctx context.Context, args []string, out io.Writer) error {
 // dryRunCognito logs password changes instead of making them.
 type dryRunCognito struct{}
 
+// AdminGetUser fails: a dry run makes no AWS calls, so PreAuthentication
+// events need cognito:user_status and sub in their user attributes.
+func (dryRunCognito) AdminGetUser(context.Context, *cip.AdminGetUserInput, ...func(*cip.Options)) (*cip.AdminGetUserOutput, error) {
+	return nil, errors.New("dry run: AdminGetUser not called; add cognito:user_status and sub to the event's userAttributes, or pass -live")
+}
+
 func (dryRunCognito) AdminSetUserPassword(ctx context.Context, in *cip.AdminSetUserPasswordInput, _ ...func(*cip.Options)) (*cip.AdminSetUserPasswordOutput, error) {
 	slog.InfoContext(ctx, "dry run: AdminSetUserPassword not called",
 		"username", aws.ToString(in.Username),
 		"permanent", in.Permanent,
 	)
 	return &cip.AdminSetUserPasswordOutput{}, nil
+}
+
+// dryRunDynamoDB has no rotation records, so every password is stale, and
+// logs the records it would write.
+type dryRunDynamoDB struct{}
+
+func (dryRunDynamoDB) GetItem(context.Context, *dynamodb.GetItemInput, ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	return &dynamodb.GetItemOutput{}, nil
+}
+
+func (dryRunDynamoDB) PutItem(ctx context.Context, in *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	slog.InfoContext(ctx, "dry run: PutItem not called", "table", aws.ToString(in.TableName))
+	return &dynamodb.PutItemOutput{}, nil
 }

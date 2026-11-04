@@ -28,8 +28,9 @@ func TestRouting_DisabledOrUnknownTriggerIsAnError(t *testing.T) {
 	e := newEnv(t, map[string]string{"APP_POSTCONFIRMATION_ENABLED": "true"})
 
 	tests := map[string]json.RawMessage{
-		"disabled hook":   preSignUpEvent("PreSignUp_SignUp", "1example23456789", "emma@example.com"),
-		"unknown trigger": event("PreAuthentication_Authentication", "1example23456789", "user-1", map[string]any{}, map[string]any{}),
+		"disabled hook":    preSignUpEvent("PreSignUp_SignUp", "1example23456789", "emma@example.com"),
+		"disabled preauth": signIn("8a1b2c3d-0000-4000-8000-000000000001", "CONFIRMED"),
+		"unknown trigger":  event("PostAuthentication_Authentication", "1example23456789", "user-1", map[string]any{}, map[string]any{}),
 	}
 	for name, raw := range tests {
 		t.Run(name, func(t *testing.T) {

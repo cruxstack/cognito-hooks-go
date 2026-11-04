@@ -26,11 +26,12 @@ build: ## build the lambda binary (dist/bootstrap); GOARCH=arm64 by default
 	GOOS=linux GOARCH=$(GOARCH) CGO_ENABLED=0 go build -trimpath -tags lambda.norpc -ldflags "$(LDFLAGS)" -o $(DIST)/bootstrap .
 
 .PHONY: package
-package: build ## zip the binary with PRESIGNUP_POLICY and/or POSTCONFIRMATION_POLICY into dist/lambda.zip
-	@test -n "$(PRESIGNUP_POLICY)$(POSTCONFIRMATION_POLICY)" || (echo "usage: make package [PRESIGNUP_POLICY=path.rego] [POSTCONFIRMATION_POLICY=path.rego]"; exit 1)
+package: build ## zip the binary with PRESIGNUP_POLICY, POSTCONFIRMATION_POLICY, and/or PREAUTHENTICATION_POLICY into dist/lambda.zip
+	@test -n "$(PRESIGNUP_POLICY)$(POSTCONFIRMATION_POLICY)$(PREAUTHENTICATION_POLICY)" || (echo "usage: make package [PRESIGNUP_POLICY=path.rego] [POSTCONFIRMATION_POLICY=path.rego] [PREAUTHENTICATION_POLICY=path.rego]"; exit 1)
 	$(if $(PRESIGNUP_POLICY),cp $(PRESIGNUP_POLICY) $(DIST)/presignup.rego)
 	$(if $(POSTCONFIRMATION_POLICY),cp $(POSTCONFIRMATION_POLICY) $(DIST)/postconfirmation.rego)
-	cd $(DIST) && rm -f lambda.zip && zip -q lambda.zip bootstrap $(if $(PRESIGNUP_POLICY),presignup.rego) $(if $(POSTCONFIRMATION_POLICY),postconfirmation.rego)
+	$(if $(PREAUTHENTICATION_POLICY),cp $(PREAUTHENTICATION_POLICY) $(DIST)/preauthentication.rego)
+	cd $(DIST) && rm -f lambda.zip && zip -q lambda.zip bootstrap $(if $(PRESIGNUP_POLICY),presignup.rego) $(if $(POSTCONFIRMATION_POLICY),postconfirmation.rego) $(if $(PREAUTHENTICATION_POLICY),preauthentication.rego)
 	@echo "$(DIST)/lambda.zip"
 
 .PHONY: clean
@@ -87,8 +88,10 @@ check: lint test vuln ## run lint, tests, and the vulnerability check, as CI doe
 eval: ## evaluate the example policies against the example events
 	go run ./cmd/devtool eval -presignup-policy examples/policies/presignup/domains.rego -events examples/events/presignup.json
 	go run ./cmd/devtool eval -postconfirmation-policy examples/policies/postconfirmation/skip-clients.rego -events examples/events/postconfirmation.json
+	go run ./cmd/devtool eval -preauthentication-policy examples/policies/preauthentication/skip-users.rego -events examples/events/preauthentication.json
 
 .PHONY: run
 run: ## run the example events through the whole function (dry run, uses .env)
 	go run ./cmd/devtool run -events examples/events/presignup.json
 	go run ./cmd/devtool run -events examples/events/postconfirmation.json
+	go run ./cmd/devtool run -events examples/events/preauthentication.json
