@@ -54,10 +54,11 @@ func TestNew_ClientsRetryThrottledCallsOnce(t *testing.T) {
 
 	cfg, err := config.Load(func(k string) (string, bool) {
 		v, ok := map[string]string{
-			"APP_LOG_LEVEL":                        "error",
-			"APP_PREAUTHENTICATION_ENABLED":        "true",
-			"APP_PREAUTHENTICATION_ROTATE_BEFORE":  "2026-11-01T00:00:00Z",
-			"APP_PREAUTHENTICATION_ROTATION_TABLE": "rotations",
+			"APP_LOG_LEVEL":                                   "error",
+			"APP_PREAUTHENTICATION_ENABLED":                   "true",
+			"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "true",
+			"APP_PREAUTHENTICATION_ROTATE_BEFORE":             "2026-11-01T00:00:00Z",
+			"APP_PREAUTHENTICATION_ROTATION_TABLE":            "rotations",
 		}[k]
 		return v, ok
 	})
@@ -112,5 +113,39 @@ func TestNew_ClientsRetryThrottledCallsOnce(t *testing.T) {
 		if got := fake.calls[target]; got != want {
 			t.Errorf("%s requests = %d, want %d (all: %v)", target, got, want, fake.calls)
 		}
+	}
+}
+
+// Without password rotation, the PreAuthentication hook makes no AWS calls.
+func TestNew_PreAuthenticationWithoutPasswordRotationCallsNothing(t *testing.T) {
+	fake := &throttlingAWS{calls: map[string]int{}}
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	cfg, err := config.Load(func(k string) (string, bool) {
+		v, ok := map[string]string{"APP_PREAUTHENTICATION_ENABLED": "true"}[k]
+		return v, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := New(context.Background(), cfg, aws.Config{
+		Region:       "us-east-1",
+		Credentials:  aws.AnonymousCredentials{},
+		BaseEndpoint: aws.String(srv.URL),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	event := `{"triggerSource": "PreAuthentication_Authentication", "userPoolId": "us-east-1_EXAMPLE", "userName": "emma",` +
+		`"request": {"userAttributes": {"email": "emma@example.com"}, "userNotFound": false}}`
+	if _, err := h.Handle(context.Background(), json.RawMessage(event)); err != nil {
+		t.Errorf("Handle() = %v, want nil", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.calls) != 0 {
+		t.Errorf("AWS requests = %v, want none", fake.calls)
 	}
 }

@@ -20,9 +20,10 @@ event for a hook that isn't enabled is an error.
 | `APP_POSTCONFIRMATION_POLICY_PATH` | Path to the PostConfirmation policy. Without one, every native user's password is replaced. | unset         |
 | `APP_POSTCONFIRMATION_ROTATION_TABLE` | DynamoDB table to record each replacement in, so the PreAuthentication hook doesn't replace the password again. | unset |
 | `APP_PREAUTHENTICATION_ENABLED`    | Handle `PreAuthentication_*` events. See [PreAuthentication](preauthentication.md).  | `false`               |
-| `APP_PREAUTHENTICATION_POLICY_PATH` | Path to the PreAuthentication policy. Without one, every native, confirmed user's stale password is replaced. | unset |
-| `APP_PREAUTHENTICATION_ROTATE_BEFORE` | The [cutoff](preauthentication.md#the-cutoff), an RFC 3339 timestamp that has passed, such as `2026-11-01T00:00:00Z`. Passwords the hooks haven't replaced since then are replaced at the next sign-in. | required when enabled |
-| `APP_PREAUTHENTICATION_ROTATION_TABLE` | DynamoDB table of [rotation records](preauthentication.md#rotation-records), with the partition key `sub` (string). | required when enabled |
+| `APP_PREAUTHENTICATION_POLICY_PATH` | Path to the PreAuthentication policy. | unset |
+| `APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED` | Turn on the PreAuthentication hook's [password rotation](preauthentication.md#password-rotation). | `false` |
+| `APP_PREAUTHENTICATION_ROTATE_BEFORE` | Password rotation's [cutoff](preauthentication.md#the-cutoff), an RFC 3339 timestamp that has passed, such as `2026-11-01T00:00:00Z`. Passwords the hooks haven't replaced since then are replaced at the next sign-in. | required with password rotation |
+| `APP_PREAUTHENTICATION_ROTATION_TABLE` | Password rotation's DynamoDB table of [rotation records](preauthentication.md#rotation-records), with the partition key `sub` (string). | required with password rotation |
 | `APP_LOG_LEVEL`                    | `debug`, `info`, `warn`, or `error`. `debug` logs every event, including user attributes. | `info`           |
 
 At least one hook must be enabled.
@@ -76,9 +77,11 @@ permissions to write logs and, when the PostConfirmation hook is enabled:
 }
 ```
 
-When the PreAuthentication hook is enabled, it also looks users up, and reads
-and writes the rotation table. PostConfirmation needs only `PutItem` on the
-table, and only with `APP_POSTCONFIRMATION_ROTATION_TABLE`:
+When the PreAuthentication hook's password rotation is enabled, it also
+looks users up, and reads and writes the rotation table. Without password
+rotation, the PreAuthentication hook needs no AWS permissions.
+PostConfirmation needs only `PutItem` on the table, and only with
+`APP_POSTCONFIRMATION_ROTATION_TABLE`:
 
 ```json
 [

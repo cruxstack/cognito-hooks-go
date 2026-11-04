@@ -122,6 +122,7 @@ func TestRun(t *testing.T) {
 	t.Setenv("APP_PRESIGNUP_POLICY_PATH", examples+"policies/presignup/domains.rego")
 	t.Setenv("APP_POSTCONFIRMATION_ENABLED", "true")
 	t.Setenv("APP_PREAUTHENTICATION_ENABLED", "true")
+	t.Setenv("APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED", "true")
 	t.Setenv("APP_PREAUTHENTICATION_ROTATE_BEFORE", "2026-11-01T00:00:00Z")
 	t.Setenv("APP_PREAUTHENTICATION_ROTATION_TABLE", "rotations")
 

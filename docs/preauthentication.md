@@ -2,47 +2,20 @@
 
 Cognito invokes the
 [pre authentication trigger](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-lambda-pre-authentication.html)
-when a user starts to sign in. This hook replaces the password of each
-native, confirmed user whose password the hooks haven't replaced since a
-cutoff time. The new password is random, has 128 characters, and is never
-logged or returned. A password set before the cutoff, such as one exposed in
-a credential-stuffing attack, stops working, while users who sign in with
-passwordless factors, such as email one-time passwords, notice nothing.
+when a user starts to sign in. This hook evaluates an optional policy and
+carries out the features it has enabled. It has one feature today,
+[password rotation](#password-rotation), which is off by default. With no
+feature enabled, the hook makes no AWS calls and lets every sign-in
+continue unchanged.
 
-Each user's password is replaced once, at their first sign-in after the
-cutoff. Replacing every password in bulk would cost more: each
-`AdminSetUserPassword` call makes the user a billable monthly active user,
-and a user who signs in is already one that month.
+Enable the hook with `APP_PREAUTHENTICATION_ENABLED=true`. Once the function
+is attached as the user pool's pre authentication trigger, features can be
+turned on and off with settings on the function, without changing the user
+pool.
 
-Enable it with `APP_PREAUTHENTICATION_ENABLED=true`, and set the
-[cutoff](#the-cutoff) and the [rotation table](#rotation-records). A policy
-is optional.
-
-> [!IMPORTANT]
-> Use the hook only with a user pool whose app clients allow a passwordless
-> first factor (choice-based sign-in with `EMAIL_OTP`, `SMS_OTP`, or
-> `WEB_AUTHN`). Otherwise users can't sign in once their password is
-> replaced.
-
-> [!WARNING]
-> **Unverified: whether the new password applies to the sign-in that
-> triggered the replacement.** Cognito might read the stored password before
-> it invokes the trigger. If it does, a leaked password works one last time
-> and fails from the next attempt on. Nobody has tested this yet; see
-> [how to test it](#does-the-new-password-apply-to-the-same-sign-in) in a
-> test user pool before you rely on either outcome.
-
-## Requirements
-
-- The function's execution role needs `cognito-idp:AdminSetUserPassword`
-  and `cognito-idp:AdminGetUser` on the user pool, and `dynamodb:GetItem`
-  and `dynamodb:PutItem` on the rotation table. See
-  [IAM permissions](configuration.md#iam-permissions).
-- A DynamoDB table whose partition key is `sub`, a string. See
-  [rotation records](#rotation-records).
-- Nothing in the password policy needs to change: the password has 128
-  characters (a policy's minimum length is at most 99) and always includes
-  lowercase and uppercase letters, digits, and symbols.
+| Feature                                 | Setting                                           | Default |
+| --------------------------------------- | ------------------------------------------------- | ------- |
+| [Password rotation](#password-rotation) | `APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED` | `false` |
 
 ## When it runs
 
@@ -50,7 +23,7 @@ is optional.
 | ---------------------------------- | ---------------------------------------------------------------------------- |
 | `PreAuthentication_Authentication` | A user starts to sign in with `InitiateAuth` or `AdminInitiateAuth`, or on managed login's sign-in page. Federated users' later sign-ins send it too. |
 
-The hook only acts when Cognito runs the trigger:
+The hook can only act when Cognito runs the trigger:
 
 - **Refreshing tokens doesn't run it.** The hook acts when a user signs in,
   not on sessions that already exist.
@@ -58,91 +31,17 @@ The hook only acts when Cognito runs the trigger:
   `PreventUserExistenceErrors` to `ENABLED`,** with `userNotFound` set to
   `true`.
 
-It never replaces the password of these users, whatever the policy returns:
-
-| User                                       | Why                                                                          |
-| ------------------------------------------ | ---------------------------------------------------------------------------- |
-| Unknown (`userNotFound` is `true`)         | There is no user.                                                            |
-| Federated (`cognito:user_status` of `EXTERNAL_PROVIDER`) | A password would turn the federated profile into a password login. |
-| Unconfirmed (`UNCONFIRMED`)                | A permanent password would confirm the user without verifying their email address. |
-
-Users with any other status, such as `FORCE_CHANGE_PASSWORD` or
-`RESET_REQUIRED`, have a password that someone may know, so it is replaced.
-Because the new password is permanent, Cognito sets their status to
-`CONFIRMED`.
-
-## How it works
-
-1. The hook reads the user's `sub` and `cognito:user_status` from the
-   event's user attributes. If either is missing, it looks the user up with
-   `AdminGetUser` rather than guess.
-2. Unless the user is one of those above, it reads the user's
-   [rotation record](#rotation-records).
-3. If there is a policy, it returns the actions for the user. Without one,
-   the default is `password.replace`.
-4. Unless the user is one of those above or the policy returned
-   `password.skip`, the hook replaces a stale password: one the hooks never
-   replaced, or replaced before the cutoff. It calls `AdminSetUserPassword`
-   with `Permanent: true` and a random password from `crypto/rand`, then
-   records the time.
-5. It returns the event unchanged.
-
-Two sign-ins of the same user at the same time may both replace the
-password. That is harmless, so the hook doesn't lock.
-
-## The cutoff
-
-`APP_PREAUTHENTICATION_ROTATE_BEFORE` is an RFC 3339 timestamp, such as
-`2026-11-01T00:00:00Z`. A password the hooks haven't replaced since then is
-replaced at the user's next sign-in.
-
-- **Use a time that has passed,** such as when the passwords were exposed.
-  A cutoff in the future stops the function from starting: until it passed,
-  every replacement would be before it, so every sign-in would replace the
-  password again.
-- **Moving it later** gives every user a new password once more, at their
-  next sign-in.
-- **The record is of the hooks' replacements,** not of every password
-  change. A password a user chooses later, for example with
-  `ConfirmForgotPassword`, is kept if the hooks replaced theirs after the
-  cutoff, and replaced at their next sign-in otherwise. The
-  [PostConfirmation hook](postconfirmation.md) replaces those passwords
-  when they are chosen.
-
-## Rotation records
-
-Cognito doesn't record when a password was set: `AdminGetUser` returns only
-`UserCreateDate` and `UserLastModifiedDate`, and the second changes with any
-attribute update. So the hook keeps its own record, in the DynamoDB table
-named by `APP_PREAUTHENTICATION_ROTATION_TABLE`:
-
-| Attribute     | Type                | Value                                                    |
-| ------------- | ------------------- | -------------------------------------------------------- |
-| `sub`         | S (partition key)   | The user's `sub`.                                        |
-| `replaced_at` | S                   | When the hooks last replaced the password, RFC 3339 in UTC. |
-
-The record isn't a Cognito custom attribute, for two reasons: writing user
-attributes uses the user pool's `UserUpdate` quota (25 requests per second,
-shared with other attribute updates), and an app client allowed to write the
-attribute would let an attacker's session mark its password as already
-replaced.
-
-Set `APP_POSTCONFIRMATION_ROTATION_TABLE` to the same table on the
-PostConfirmation hook, and it records its replacements too, so a newly
-confirmed user doesn't get another new password at their first sign-in.
-
 ## Policy
 
-Set `APP_PREAUTHENTICATION_POLICY_PATH` to choose the actions per user, for
-example to keep the passwords of the accounts an end-to-end test suite signs
-in to with a password. The policy must define
-`data.cognito_hook_preauthentication.result` as `{"actions": [...]}` (see
-[actions](policies.md#actions)):
+Set `APP_PREAUTHENTICATION_POLICY_PATH` to choose the actions per user. The
+policy must define `data.cognito_hook_preauthentication.result` as
+`{"actions": [...]}` (see [actions](policies.md#actions)). Each action
+belongs to a feature and only has an effect when that feature is enabled:
 
-| Action             | Effect                                                                   | Parameters          |
-| ------------------ | ------------------------------------------------------------------------ | ------------------- |
-| `password.replace` | Replaces the password if it is stale. The default when the policy returns no `password.*` action, and wins over `password.skip`. |   |
-| `password.skip`    | Keeps the password.                                                      | `reason` (optional; logged) |
+| Action             | Feature           | Effect                                                                   | Parameters          |
+| ------------------ | ----------------- | ------------------------------------------------------------------------ | ------------------- |
+| `password.replace` | password rotation | Replaces the password if it is stale. The default when the policy returns no `password.*` action, and wins over `password.skip`. |   |
+| `password.skip`    | password rotation | Keeps the password.                                                      | `reason` (optional; logged) |
 
 The policy runs for every event, including unknown, federated, and
 unconfirmed users, so actions added later can apply to them too.
@@ -174,15 +73,20 @@ Input:
 - `validationData` holds the `ClientMetadata` of the `InitiateAuth` or
   `AdminInitiateAuth` request.
 - `passwordReplacedAt` is when the hooks last replaced the password. It is
-  `null` when they never did, when the record couldn't be read, and for
-  unknown, federated, and unconfirmed users, whose record the hook doesn't
-  read.
+  `null` when password rotation is disabled, when the hooks never replaced
+  the password, when the record couldn't be read, and for unknown,
+  federated, and unconfirmed users, whose record the hook doesn't read.
 
 Result:
 
 ```jsonc
 { "actions": [{ "action": "password.skip", "reason": "end-to-end test user" }] }
 ```
+
+A policy that fails, has no result, or returns an unknown action or
+parameter is logged, and the hook applies each feature's default actions. A
+policy that doesn't compile or define its `result` rule stops the function
+from starting, so every sign-in fails.
 
 [`skip-users.rego`](../examples/policies/preauthentication/skip-users.rego)
 keeps the passwords of a list of users, by `sub` or username.
@@ -194,17 +98,138 @@ keeps the passwords of a list of users, by `sub` or username.
 > `ClientMetadata`. Anyone could sign in through that client, or with that
 > metadata, and keep a leaked password working.
 
+## Password rotation
+
+Enable it with `APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED=true`, and
+set the [cutoff](#the-cutoff) and the [rotation table](#rotation-records).
+The hook then replaces the password of each native, confirmed user whose
+password the hooks haven't replaced since the cutoff. The new password is
+random, has 128 characters, and is never logged or returned. A password set
+before the cutoff, such as one exposed in a credential-stuffing attack,
+stops working, while users who sign in with passwordless factors, such as
+email one-time passwords, notice nothing.
+
+Each user's password is replaced once, at their first sign-in after the
+cutoff. Replacing every password in bulk would cost more: each
+`AdminSetUserPassword` call makes the user a billable monthly active user,
+and a user who signs in is already one that month.
+
+> [!IMPORTANT]
+> Enable password rotation only in a user pool whose app clients allow a
+> passwordless first factor (choice-based sign-in with `EMAIL_OTP`,
+> `SMS_OTP`, or `WEB_AUTHN`). Otherwise users can't sign in once their
+> password is replaced.
+
+> [!WARNING]
+> **Unverified: whether the new password applies to the sign-in that
+> triggered the replacement.** Cognito might read the stored password before
+> it invokes the trigger. If it does, a leaked password works one last time
+> and fails from the next attempt on. Nobody has tested this yet; see
+> [how to test it](#does-the-new-password-apply-to-the-same-sign-in) in a
+> test user pool before you rely on either outcome.
+
+Turning password rotation off doesn't depend on its other settings: with
+`APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED=false`, the cutoff and the
+table are ignored, and the hook stops calling Cognito and DynamoDB.
+
+### Requirements
+
+- The function's execution role needs `cognito-idp:AdminSetUserPassword`
+  and `cognito-idp:AdminGetUser` on the user pool, and `dynamodb:GetItem`
+  and `dynamodb:PutItem` on the rotation table. See
+  [IAM permissions](configuration.md#iam-permissions).
+- A DynamoDB table whose partition key is `sub`, a string. See
+  [rotation records](#rotation-records).
+- Nothing in the password policy needs to change: the password has 128
+  characters (a policy's minimum length is at most 99) and always includes
+  lowercase and uppercase letters, digits, and symbols.
+
+### Which passwords it replaces
+
+It never replaces the password of these users, whatever the policy returns:
+
+| User                                       | Why                                                                          |
+| ------------------------------------------ | ---------------------------------------------------------------------------- |
+| Unknown (`userNotFound` is `true`)         | There is no user.                                                            |
+| Federated (`cognito:user_status` of `EXTERNAL_PROVIDER`) | A password would turn the federated profile into a password login. |
+| Unconfirmed (`UNCONFIRMED`)                | A permanent password would confirm the user without verifying their email address. |
+
+Users with any other status, such as `FORCE_CHANGE_PASSWORD` or
+`RESET_REQUIRED`, have a password that someone may know, so it is replaced.
+Because the new password is permanent, Cognito sets their status to
+`CONFIRMED`.
+
 If your PostConfirmation policy keeps the passwords of end-to-end test users,
-list the same users in this policy too, or their passwords are replaced at
-their first sign-in.
+list the same users in this hook's policy too, or their passwords are
+replaced at their first sign-in.
 
-## Failure handling
+### How it works
 
-The hook fails closed: when it can't tell whether a password may be kept, or
-can't replace it, it rejects the sign-in rather than let Cognito check an old
-password. Cognito shows the user `PreAuthentication failed with error
-Sign-in is temporarily unavailable. Try again in a moment.`, and the hook
-logs the details.
+1. The hook reads the user's `sub` and `cognito:user_status` from the
+   event's user attributes. If either is missing, it looks the user up with
+   `AdminGetUser` rather than guess.
+2. Unless the user is one of those above, it reads the user's
+   [rotation record](#rotation-records).
+3. If there is a policy, it returns the actions for the user. Without one,
+   the default is `password.replace`.
+4. Unless the user is one of those above or the policy returned
+   `password.skip`, the hook replaces a stale password: one the hooks never
+   replaced, or replaced before the cutoff. It calls `AdminSetUserPassword`
+   with `Permanent: true` and a random password from `crypto/rand`, then
+   records the time.
+5. It returns the event unchanged.
+
+Two sign-ins of the same user at the same time may both replace the
+password. That is harmless, so the hook doesn't lock.
+
+### The cutoff
+
+`APP_PREAUTHENTICATION_ROTATE_BEFORE` is an RFC 3339 timestamp, such as
+`2026-11-01T00:00:00Z`. A password the hooks haven't replaced since then is
+replaced at the user's next sign-in.
+
+- **Use a time that has passed,** such as when the passwords were exposed.
+  A cutoff in the future stops the function from starting: until it passed,
+  every replacement would be before it, so every sign-in would replace the
+  password again.
+- **Moving it later** gives every user a new password once more, at their
+  next sign-in.
+- **The record is of the hooks' replacements,** not of every password
+  change. A password a user chooses later, for example with
+  `ConfirmForgotPassword`, is kept if the hooks replaced theirs after the
+  cutoff, and replaced at their next sign-in otherwise. The
+  [PostConfirmation hook](postconfirmation.md) replaces those passwords
+  when they are chosen.
+
+### Rotation records
+
+Cognito doesn't record when a password was set: `AdminGetUser` returns only
+`UserCreateDate` and `UserLastModifiedDate`, and the second changes with any
+attribute update. So the hook keeps its own record, in the DynamoDB table
+named by `APP_PREAUTHENTICATION_ROTATION_TABLE`:
+
+| Attribute     | Type                | Value                                                    |
+| ------------- | ------------------- | -------------------------------------------------------- |
+| `sub`         | S (partition key)   | The user's `sub`.                                        |
+| `replaced_at` | S                   | When the hooks last replaced the password, RFC 3339 in UTC. |
+
+The record isn't a Cognito custom attribute, for two reasons: writing user
+attributes uses the user pool's `UserUpdate` quota (25 requests per second,
+shared with other attribute updates), and an app client allowed to write the
+attribute would let an attacker's session mark its password as already
+replaced.
+
+Set `APP_POSTCONFIRMATION_ROTATION_TABLE` to the same table on the
+PostConfirmation hook, and it records its replacements too, so a newly
+confirmed user doesn't get another new password at their first sign-in.
+
+### Failure handling
+
+Password rotation fails closed: when it can't tell whether a password may
+be kept, or can't replace it, the hook rejects the sign-in rather than let
+Cognito check an old password. Cognito shows the user `PreAuthentication
+failed with error Sign-in is temporarily unavailable. Try again in a
+moment.`, and the hook logs the details.
 
 | Situation                                                     | Result                                             |
 | ------------------------------------------------------------- | -------------------------------------------------- |
@@ -238,9 +263,10 @@ sign-ins are rejected; the user can try again a moment later.
 
 There is no setting that lets throttled sign-ins through: an attacker could
 cause the throttling on purpose, for example with `ForgotPassword`
-requests, to use it.
+requests, to use it. Turning password rotation off stops the replacements
+altogether.
 
-## Monitoring
+### Monitoring
 
 - **The function's `Errors` metric** counts rejected sign-ins: failed
   replacements and lookups, events the function can't decode, and every
@@ -275,8 +301,8 @@ To find out, use a test user pool, never a production one:
 1. Allow the `PASSWORD` and `EMAIL_OTP` first factors in the user pool, and
    create an app client without a secret that allows `ALLOW_USER_AUTH`,
    `ALLOW_USER_SRP_AUTH`, and `ALLOW_USER_PASSWORD_AUTH`.
-2. Deploy the hook with a cutoff that has passed and
-   `APP_LOG_LEVEL=debug`, and attach it as the user pool's pre
+2. Deploy the hook with password rotation enabled, a cutoff that has
+   passed, and `APP_LOG_LEVEL=debug`, and attach it as the user pool's pre
    authentication trigger. Don't list the test user in the policy.
 3. Create a confirmed test user with a verified email address, and note its
    `sub`.
@@ -319,7 +345,7 @@ each flow on this page.
 ### Does the event include `sub` and `cognito:user_status`?
 
 AWS documents the trigger's `userAttributes` without listing them, and the
-events haven't been checked. The hook doesn't depend on it: when either
-attribute is missing, it looks the user up with `AdminGetUser`, which adds a
-Cognito API call to each such sign-in. The debug log in the test above shows
-the events Cognito sends.
+events haven't been checked. Password rotation doesn't depend on it: when
+either attribute is missing, the hook looks the user up with
+`AdminGetUser`, which adds a Cognito API call to each such sign-in. The
+debug log in the test above shows the events Cognito sends.

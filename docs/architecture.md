@@ -12,8 +12,11 @@ Cognito ─▶ handler ─┬─▶ PreSignUp:         verify ─▶ policy ─�
                     ├─▶ PostConfirmation:  policy ─▶ actions ─▶ AdminSetUserPassword ─▶ record
                     │                      (Rego)               (Cognito; not for       (DynamoDB;
                     │                                            federated users)        optional)
-                    └─▶ PreAuthentication: record ─▶ policy ─▶ actions ─▶ AdminSetUserPassword ─▶ record
-                                           (DynamoDB) (Rego)              (only if stale)         (DynamoDB)
+                    └─▶ PreAuthentication: policy ─▶ actions ─▶ enabled features
+                                           (Rego)
+                                           password rotation (opt-in):
+                                             record ─▶ policy ─▶ AdminSetUserPassword ─▶ record
+                                             (DynamoDB)          (only if stale)         (DynamoDB)
 ```
 
 Each policy returns a list of [actions](policies.md#actions), such as
@@ -31,7 +34,7 @@ restrictive action wins) and carries them out in its own order.
 | `internal/handler`          | Decodes the event, adds log context, and routes it by trigger source to a hook.                      |
 | `internal/presignup`        | The PreSignUp hook: policy input, resolving its actions, and email verification.                     |
 | `internal/postconfirmation` | The PostConfirmation hook: the optional policy, its actions, and the password replacement.          |
-| `internal/preauthentication` | The PreAuthentication hook: the cutoff, the optional policy, its actions, and the password replacement. |
+| `internal/preauthentication` | The PreAuthentication hook: the optional policy, its actions, and its opt-in features (password rotation). |
 | `internal/rotation`         | Records of when the hooks last replaced each password, in DynamoDB.                                  |
 | `internal/cognito`          | The policy input fields every hook shares.                                                           |
 | `internal/policy`           | Compiles and evaluates Rego policies.                                                                |
@@ -58,11 +61,13 @@ app that made the request. Each hook decides what an error means for it.
   error couldn't undo anything. A failed or invalid policy falls back to
   the default actions, which replace the password, and a failed replacement
   is logged.
-- **PreAuthentication fails closed.** When it can't tell whether a password
-  may be kept, or can't replace a stale one, it rejects the sign-in, so an
-  old password is never checked. A failed or invalid policy falls back to
-  the default actions, an unreadable rotation record counts as stale, and a
-  replacement that can't be recorded is logged and allowed.
+- **PreAuthentication features are opt-in, and fail closed.** With none
+  enabled, the hook lets every sign-in continue. Password rotation rejects
+  the sign-in when it can't tell whether a password may be kept, or can't
+  replace a stale one, so an old password is never checked. A failed or
+  invalid policy falls back to the default actions, an unreadable rotation
+  record counts as stale, and a replacement that can't be recorded is
+  logged and allowed.
 - **Misrouted events are errors.** An event for a hook that isn't enabled,
   or for an unsupported trigger, returns an error instead of passing
   through, so a function attached to the wrong trigger is noticed.

@@ -21,12 +21,14 @@ const (
 	user2 = "8a1b2c3d-0000-4000-8000-000000000002"
 )
 
-// preAuthVars enables the PreAuthentication hook with a cutoff, plus extra.
+// preAuthVars enables the PreAuthentication hook with password rotation and
+// a cutoff, plus extra.
 func preAuthVars(cutoff string, extra ...string) map[string]string {
 	vars := map[string]string{
-		"APP_PREAUTHENTICATION_ENABLED":        "true",
-		"APP_PREAUTHENTICATION_ROTATE_BEFORE":  cutoff,
-		"APP_PREAUTHENTICATION_ROTATION_TABLE": "rotations",
+		"APP_PREAUTHENTICATION_ENABLED":                   "true",
+		"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "true",
+		"APP_PREAUTHENTICATION_ROTATE_BEFORE":             cutoff,
+		"APP_PREAUTHENTICATION_ROTATION_TABLE":            "rotations",
 	}
 	for i := 0; i+1 < len(extra); i += 2 {
 		vars[extra[i]] = extra[i+1]
@@ -41,6 +43,34 @@ func (f *fakeDynamoDB) record(sub string, at time.Time) {
 	f.items["rotations/"+sub] = map[string]ddbtypes.AttributeValue{
 		"sub":         &ddbtypes.AttributeValueMemberS{Value: sub},
 		"replaced_at": &ddbtypes.AttributeValueMemberS{Value: at.Format(time.RFC3339Nano)},
+	}
+}
+
+// Password rotation is off by default: the hook needs no other setting, and
+// it calls neither Cognito nor DynamoDB.
+func TestPreAuthentication_PasswordRotationIsOffByDefault(t *testing.T) {
+	for name, vars := range map[string]map[string]string{
+		"default": {"APP_PREAUTHENTICATION_ENABLED": "true"},
+		"turned off with its settings left": {
+			"APP_PREAUTHENTICATION_ENABLED":                   "true",
+			"APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED": "false",
+			"APP_PREAUTHENTICATION_ROTATE_BEFORE":             "2026-11-01T00:00:00Z",
+			"APP_PREAUTHENTICATION_ROTATION_TABLE":            "rotations",
+			"APP_PREAUTHENTICATION_POLICY_PATH":               policies + "preauthentication/skip-users.rego",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t, vars)
+			resp := e.mustHandle(signIn(user1, "CONFIRMED"))
+			if resp["triggerSource"] != "PreAuthentication_Authentication" {
+				t.Errorf("response = %v, want the request event", resp)
+			}
+			e.mustHandle(preAuthenticationEvent("emma", map[string]string{"email": "emma@example.com"}, false))
+			if got := len(e.cognito.replaced()); got != 0 || e.cognito.lookups != 0 || e.dynamodb.gets != 0 || e.dynamodb.putCount != 0 {
+				t.Errorf("replacements %d, lookups %d, record reads %d, writes %d; want none",
+					got, e.cognito.lookups, e.dynamodb.gets, e.dynamodb.putCount)
+			}
+		})
 	}
 }
 

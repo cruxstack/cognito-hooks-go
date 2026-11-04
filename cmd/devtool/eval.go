@@ -42,7 +42,7 @@ func evalCmd(ctx context.Context, args []string, out io.Writer) error {
 	eventsPath := fs.String("events", "", "JSON file with an event or an array of events (required)")
 	preSignUpPolicy := fs.String("presignup-policy", "", "PreSignUp policy (required for PreSignUp events)")
 	postConfirmationPolicy := fs.String("postconfirmation-policy", "", "PostConfirmation policy (optional; without one every native user's password is replaced)")
-	preAuthenticationPolicy := fs.String("preauthentication-policy", "", "PreAuthentication policy (optional; without one every native, confirmed user's stale password is replaced)")
+	preAuthenticationPolicy := fs.String("preauthentication-policy", "", "PreAuthentication policy (optional); outcomes assume password rotation is enabled")
 	verdict := fs.String("verdict", "", "give PreSignUp policies an email verification result with this verdict: Valid, Risky, or Invalid")
 	verifyTriggers := fs.String("verify-triggers", presignup.TriggerSignUp, "comma-separated trigger sources -verdict applies to, as in APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES")
 	showInput := fs.Bool("show-input", false, "print the policy input for each event")
@@ -228,9 +228,10 @@ func postConfirmationOutcome(e *postconfirmation.Event, d *postconfirmation.Deci
 }
 
 // preAuthenticationOutcome is "password.replace", or "password.skip:
-// <reason>". The hook carries out password.replace only for a stale
-// password, which eval can't tell: it reads no rotation records. Nor does it
-// look up a user whose event lacks cognito:user_status, as the hook does.
+// <reason>", as the hook would carry them out with password rotation
+// enabled. The hook replaces only a stale password, which eval can't tell: it
+// reads no rotation records. Nor does it look up a user whose event lacks
+// cognito:user_status, as the hook does.
 func preAuthenticationOutcome(e *preauthentication.Event, d *preauthentication.Decision) string {
 	status := e.Request.UserAttributes["cognito:user_status"]
 	if reason := preauthentication.SkipReason(e.Request.UserNotFound, status); reason != "" {

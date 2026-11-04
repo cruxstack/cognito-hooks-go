@@ -55,6 +55,7 @@ func run(ctx context.Context, level *slog.LevelVar) error {
 		"presignup_enabled", cfg.PreSignUp.Enabled,
 		"postconfirmation_enabled", cfg.PostConfirmation.Enabled,
 		"preauthentication_enabled", cfg.PreAuthentication.Enabled,
+		"preauthentication_password_rotation_enabled", cfg.PreAuthentication.Enabled && cfg.PreAuthentication.PasswordRotation.Enabled,
 		"email_verification_enabled", cfg.PreSignUp.Enabled && cfg.EmailVerification.Enabled,
 	)
 	lambda.Start(h.Handle)

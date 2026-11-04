@@ -128,13 +128,55 @@ func event(status string) *Event {
 	return e
 }
 
+// newHook returns the hook with password rotation enabled.
 func newHook(t *testing.T, c *fakeCognito, s *fakeStore, pol *policy.Engine) *Hook {
 	t.Helper()
-	h, err := New(Config{Cognito: c, Rotations: s, RotateBefore: cutoff, Policy: pol})
+	h, err := New(Config{
+		Policy:           pol,
+		PasswordRotation: &PasswordRotation{Cognito: c, Rotations: s, RotateBefore: cutoff},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return h
+}
+
+// Password rotation is off unless configured: the hook evaluates the policy,
+// leaves the event unchanged, and has no Cognito or DynamoDB client to call,
+// even for a confirmed user who never had a replacement.
+func TestHandle_WithoutPasswordRotation(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(logging.NewJSONHandler(&logs, slog.LevelDebug)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	for name, pol := range map[string]*policy.Engine{
+		"no policy":     nil,
+		"replace":       compile(t, `result := {"actions": ["password.replace"]}`),
+		"skip":          compile(t, `result := {"actions": ["password.skip"]}`),
+		"broken policy": compile(t, `result := "skip"`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			logs.Reset()
+			h, err := New(Config{Policy: pol})
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := event("CONFIRMED")
+			want, _ := json.Marshal(e)
+			if err := h.Handle(context.Background(), e); err != nil {
+				t.Fatalf("Handle() = %v, want nil", err)
+			}
+			if got, _ := json.Marshal(e); !bytes.Equal(got, want) {
+				t.Errorf("event changed:\n  %s\nwant\n  %s", got, want)
+			}
+			for _, msg := range []string{"password replace", "password already", "rotation record", "user lookup"} {
+				if strings.Contains(logs.String(), msg) {
+					t.Errorf("logs = %s, want no password rotation", logs.String())
+				}
+			}
+		})
+	}
 }
 
 func TestHandle_ReplacesAndRecords(t *testing.T) {
@@ -436,7 +478,7 @@ func TestHandle_Deadlines(t *testing.T) {
 		c, s := &fakeCognito{}, newStore()
 		s.readBlock = true
 		h := newHook(t, c, s, nil)
-		h.timeout, h.readTimeout = time.Second, 20*time.Millisecond
+		h.timeout, h.rotation.readTimeout = time.Second, 20*time.Millisecond
 
 		if err := h.Handle(context.Background(), event("CONFIRMED")); err != nil {
 			t.Fatal(err)
@@ -518,14 +560,17 @@ func TestIsStale(t *testing.T) {
 	}
 }
 
-func TestNew_RequiresItsDependencies(t *testing.T) {
-	for name, cfg := range map[string]Config{
+func TestNew(t *testing.T) {
+	if _, err := New(Config{}); err != nil {
+		t.Errorf("New() without features = %v, want the hook", err)
+	}
+	for name, r := range map[string]PasswordRotation{
 		"cognito":   {Rotations: newStore(), RotateBefore: cutoff},
 		"rotations": {Cognito: &fakeCognito{}, RotateBefore: cutoff},
 		"cutoff":    {Cognito: &fakeCognito{}, Rotations: newStore()},
 	} {
-		if _, err := New(cfg); err == nil {
-			t.Errorf("expected an error without a %s", name)
+		if _, err := New(Config{PasswordRotation: &r}); err == nil {
+			t.Errorf("expected an error for password rotation without a %s", name)
 		}
 	}
 }

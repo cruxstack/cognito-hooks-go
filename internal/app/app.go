@@ -158,12 +158,15 @@ func newPreAuthentication(ctx context.Context, cfg *config.Config, awsCfg aws.Co
 		}
 	}
 
-	return preauthentication.New(preauthentication.Config{
-		Cognito:      d.cognitoIDP(awsCfg),
-		Rotations:    rotation.DynamoDB{Client: d.dynamoDB(awsCfg), Table: cfg.PreAuthentication.RotationTable},
-		RotateBefore: cfg.PreAuthentication.RotateBefore,
-		Policy:       pol,
-	})
+	hookCfg := preauthentication.Config{Policy: pol}
+	if r := cfg.PreAuthentication.PasswordRotation; r.Enabled {
+		hookCfg.PasswordRotation = &preauthentication.PasswordRotation{
+			Cognito:      d.cognitoIDP(awsCfg),
+			Rotations:    rotation.DynamoDB{Client: d.dynamoDB(awsCfg), Table: r.Table},
+			RotateBefore: r.RotateBefore,
+		}
+	}
+	return preauthentication.New(hookCfg)
 }
 
 // cognitoIDP returns the Cognito client, creating it on first use so the

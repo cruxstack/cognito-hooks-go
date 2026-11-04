@@ -226,10 +226,12 @@ func TestPreAuthenticationPolicies(t *testing.T) {
 			for i, e := range events {
 				c := &countingCognito{}
 				h, err := preauthentication.New(preauthentication.Config{
-					Cognito:      c,
-					Rotations:    emptyStore{},
-					RotateBefore: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
-					Policy:       pol,
+					Policy: pol,
+					PasswordRotation: &preauthentication.PasswordRotation{
+						Cognito:      c,
+						Rotations:    emptyStore{},
+						RotateBefore: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+					},
 				})
 				if err != nil {
 					t.Fatal(err)

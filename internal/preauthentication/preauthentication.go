@@ -1,12 +1,14 @@
 // Package preauthentication implements the PreAuthentication hook. It runs
-// when a user starts to sign in, and replaces the password of each native,
-// confirmed user whose password the hooks haven't replaced since a cutoff
-// time with a random one that nobody knows. A password set before the cutoff,
-// such as one leaked in a credential-stuffing attack, stops working, while
-// users who sign in with passwordless factors such as email one-time
-// passwords notice nothing. An optional policy can keep some passwords.
+// when a user starts to sign in, evaluates its optional policy, and carries
+// out the features it has enabled.
 //
-// Cognito doesn't record when a password was set, so the hook keeps its own
+// Its one feature today, password rotation, is off by default. When enabled,
+// it replaces the password of each native, confirmed user whose password the
+// hooks haven't replaced since a cutoff time with a random one that nobody
+// knows. A password set before the cutoff, such as one leaked in a
+// credential-stuffing attack, stops working, while users who sign in with
+// passwordless factors such as email one-time passwords notice nothing.
+// Cognito doesn't record when a password was set, so rotation keeps its own
 // record of each replacement (see package rotation).
 package preauthentication
 
@@ -39,7 +41,8 @@ const TriggerPrefix = "PreAuthentication_"
 // InitiateAuth, AdminInitiateAuth, or managed login.
 const TriggerAuthentication = "PreAuthentication_Authentication"
 
-// Actions a PreAuthentication policy can return.
+// Actions a PreAuthentication policy can return. The password actions only
+// have an effect when password rotation is enabled.
 const (
 	// ActionReplacePassword replaces the user's password with a random one if
 	// the hooks haven't replaced it since the cutoff. It is the default when
@@ -75,8 +78,8 @@ const (
 // including a cold start, so the hook returns its own error before Cognito
 // gives up.
 const (
-	// Timeout bounds the calls that decide a sign-in: looking up the user,
-	// reading the rotation record, and replacing the password.
+	// Timeout bounds the AWS calls that decide a sign-in, such as password
+	// rotation's user lookup, record read, and replacement.
 	Timeout = 3 * time.Second
 	// ReadTimeout bounds reading the rotation record, within Timeout, so a
 	// slow read leaves time to replace the password.
@@ -90,8 +93,9 @@ const (
 // <message>". The details are logged, not returned.
 const UnavailableMessage = "Sign-in is temporarily unavailable. Try again in a moment."
 
-// ErrUnavailable is returned to Cognito, which rejects the sign-in, when the
-// hook can't tell whether the password must be replaced or can't replace it.
+// ErrUnavailable is returned to Cognito, which rejects the sign-in, when an
+// enabled feature can't do its job, such as password rotation failing to
+// tell whether the password must be replaced or to replace it.
 var ErrUnavailable error = unavailableError{}
 
 // unavailableError carries UnavailableMessage, a sentence for users rather
@@ -103,7 +107,7 @@ func (unavailableError) Error() string { return UnavailableMessage }
 // Event is a PreAuthentication trigger event.
 type Event = events.CognitoEventUserPoolsPreAuthentication
 
-// CognitoAPI is the part of the Cognito API the hook calls.
+// CognitoAPI is the part of the Cognito API password rotation calls.
 type CognitoAPI interface {
 	AdminGetUser(ctx context.Context, params *cip.AdminGetUserInput, optFns ...func(*cip.Options)) (*cip.AdminGetUserOutput, error)
 	AdminSetUserPassword(ctx context.Context, params *cip.AdminSetUserPasswordInput, optFns ...func(*cip.Options)) (*cip.AdminSetUserPasswordOutput, error)
@@ -120,8 +124,9 @@ type PolicyInput struct {
 	// client prevents user existence errors.
 	UserNotFound bool `json:"userNotFound"`
 	// PasswordReplacedAt is when the hooks last replaced the password. It is
-	// null when they never did, when the record couldn't be read, and for
-	// users whose password the hook never replaces.
+	// null when they never did, when the record couldn't be read, when
+	// password rotation is disabled, and for users whose password the hook
+	// never replaces.
 	PasswordReplacedAt *time.Time `json:"passwordReplacedAt"`
 }
 
@@ -142,8 +147,9 @@ func NewPolicyInput(e *Event, replacedAt *time.Time) PolicyInput {
 type Decision struct {
 	// Actions are the actions the policy returned; empty without a policy.
 	Actions []action.Action `json:"actions"`
-	// ReplacePassword is false when the password is kept. When it is true,
-	// the password is replaced only if it is stale.
+	// ReplacePassword is false when the password is kept. When it is true
+	// and password rotation is enabled, the password is replaced if it is
+	// stale.
 	ReplacePassword bool `json:"replacePassword"`
 	// Reason is why the password is kept.
 	Reason string `json:"reason,omitempty"`
@@ -202,9 +208,9 @@ func Decide(ctx context.Context, p *policy.Engine, in PolicyInput) (*Decision, e
 	return d, nil
 }
 
-// SkipReason returns why the hook keeps a user's password whatever the
-// policy decides, or "" when it may replace it: the user doesn't exist, is
-// federated, or hasn't confirmed their sign-up.
+// SkipReason returns why password rotation keeps a user's password whatever
+// the policy decides, or "" when it may replace it: the user doesn't exist,
+// is federated, or hasn't confirmed their sign-up.
 func SkipReason(userNotFound bool, status string) string {
 	switch {
 	case userNotFound:
@@ -225,118 +231,138 @@ func IsStale(replacedAt *time.Time, rotateBefore time.Time) bool {
 
 // Config configures the hook.
 type Config struct {
+	// Policy decides the actions for each user. It is optional.
+	Policy *policy.Engine
+	// PasswordRotation enables password rotation. Nil disables it, and the
+	// hook makes no AWS calls.
+	PasswordRotation *PasswordRotation
+}
+
+// PasswordRotation configures password rotation.
+type PasswordRotation struct {
 	Cognito CognitoAPI
 	// Rotations records when each password was replaced.
 	Rotations rotation.Store
 	// RotateBefore is the cutoff: a password the hooks haven't replaced since
 	// this time is replaced at the user's next sign-in.
 	RotateBefore time.Time
-	// Policy decides the actions for each user. Without one, every native,
-	// confirmed user's stale password is replaced.
-	Policy *policy.Engine
 }
 
 // Hook handles PreAuthentication events.
 type Hook struct {
-	cognito      CognitoAPI
-	rotations    rotation.Store
-	rotateBefore time.Time
-	policy       *policy.Engine
-
-	timeout, readTimeout, writeTimeout time.Duration
+	policy  *policy.Engine
+	timeout time.Duration
+	// rotation is nil when password rotation is disabled.
+	rotation *passwordRotation
 }
 
 // New returns the hook.
 func New(cfg Config) (*Hook, error) {
-	switch {
-	case cfg.Cognito == nil:
-		return nil, errors.New("preauthentication: a cognito client is required")
-	case cfg.Rotations == nil:
-		return nil, errors.New("preauthentication: a rotation store is required")
-	case cfg.RotateBefore.IsZero():
-		return nil, errors.New("preauthentication: a rotation cutoff is required")
+	h := &Hook{policy: cfg.Policy, timeout: Timeout}
+	if r := cfg.PasswordRotation; r != nil {
+		switch {
+		case r.Cognito == nil:
+			return nil, errors.New("preauthentication: password rotation needs a cognito client")
+		case r.Rotations == nil:
+			return nil, errors.New("preauthentication: password rotation needs a rotation store")
+		case r.RotateBefore.IsZero():
+			return nil, errors.New("preauthentication: password rotation needs a cutoff")
+		}
+		h.rotation = &passwordRotation{
+			cognito:      r.Cognito,
+			rotations:    r.Rotations,
+			rotateBefore: r.RotateBefore,
+			readTimeout:  ReadTimeout,
+			writeTimeout: WriteTimeout,
+		}
 	}
-	return &Hook{
-		cognito:      cfg.Cognito,
-		rotations:    cfg.Rotations,
-		rotateBefore: cfg.RotateBefore,
-		policy:       cfg.Policy,
-		timeout:      Timeout,
-		readTimeout:  ReadTimeout,
-		writeTimeout: WriteTimeout,
-	}, nil
+	return h, nil
 }
 
-// user is what the hook needs to know about the user who is signing in.
-type user struct {
-	sub    string
-	status string
-}
-
-// Handle replaces the user's password if it is stale, and leaves the event
-// unchanged. It fails closed: when it can't tell whether the user may have a
-// stale password, or can't replace it, it returns ErrUnavailable and Cognito
-// rejects the sign-in, so an old password is never checked. A failure to
-// read the rotation record replaces the password, and a failure to record a
-// replacement is logged; the next sign-in then replaces it again.
+// Handle evaluates the policy for one sign-in and carries out the enabled
+// features, leaving the event unchanged. An enabled feature that can't do
+// its job returns ErrUnavailable, and Cognito rejects the sign-in.
 func (h *Hook) Handle(ctx context.Context, e *Event) error {
 	// the calls that decide the sign-in share one deadline
 	callCtx, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
 
-	u, err := h.user(callCtx, e)
+	u := user{sub: e.Request.UserAttributes["sub"], status: e.Request.UserAttributes["cognito:user_status"]}
+	var err error
+	if h.rotation != nil {
+		u, err = h.rotation.lookup(callCtx, e, u)
+	}
 	ctx = logging.WithAttrs(ctx, slog.String("sub", u.sub))
 	if err != nil {
 		slog.ErrorContext(ctx, "user lookup failed", "error", err)
 		return ErrUnavailable
 	}
 
-	skip := SkipReason(e.Request.UserNotFound, u.status)
-
-	var replacedAt *time.Time
-	stale := true
-	if skip == "" {
-		readCtx, cancelRead := context.WithTimeout(callCtx, h.readTimeout)
-		replacedAt, err = h.rotations.LastReplaced(readCtx, u.sub)
-		cancelRead()
-		if err != nil {
-			slog.WarnContext(ctx, "rotation record unavailable, treating the password as stale", "error", err)
-		} else {
-			stale = IsStale(replacedAt, h.rotateBefore)
-		}
+	var pw passwordState
+	if h.rotation != nil {
+		pw = h.rotation.read(ctx, callCtx, e, u)
 	}
 
-	d := h.decide(ctx, NewPolicyInput(e, replacedAt))
+	d := h.decide(ctx, NewPolicyInput(e, pw.replacedAt))
 
-	switch {
-	case skip != "":
-		slog.InfoContext(ctx, "password replacement skipped", "reason", skip)
-	case !d.ReplacePassword:
-		slog.InfoContext(ctx, "password replacement skipped", "reason", d.Reason)
-	case !stale:
-		slog.InfoContext(ctx, "password already replaced", "replaced_at", replacedAt.UTC().Format(time.RFC3339))
-	default:
-		if err := h.replacePassword(callCtx, e); err != nil {
-			slog.ErrorContext(ctx, "password replacement failed", "error", err)
+	if h.rotation != nil {
+		if err := h.rotation.apply(ctx, callCtx, e, u, pw, d); err != nil {
 			return ErrUnavailable
 		}
-		slog.InfoContext(ctx, "password replaced")
-		h.record(ctx, u.sub)
 	}
 	return nil
 }
 
-// user returns the user's sub and status from the event. When the event
-// lacks either, it looks the user up instead of guessing, since replacing
-// the password of a federated or unconfirmed user changes how they sign in.
-func (h *Hook) user(ctx context.Context, e *Event) (user, error) {
-	attrs := e.Request.UserAttributes
-	u := user{sub: attrs["sub"], status: attrs["cognito:user_status"]}
+// decide returns the policy's decision, or the default decision when there
+// is no policy or it fails.
+func (h *Hook) decide(ctx context.Context, in PolicyInput) *Decision {
+	if h.policy == nil {
+		return DefaultDecision()
+	}
+	d, err := Decide(ctx, h.policy, in)
+	if err != nil {
+		slog.ErrorContext(ctx, "policy failed, applying the default actions", "error", err)
+		return DefaultDecision()
+	}
+	return d
+}
+
+// user is what the hook knows about the user who is signing in.
+type user struct {
+	sub    string
+	status string
+}
+
+// passwordRotation replaces stale passwords. It fails closed: when it can't
+// tell whether the user may have a stale password, or can't replace it, the
+// sign-in is rejected, so an old password is never checked. A failure to
+// read the rotation record replaces the password, and a failure to record a
+// replacement is logged; the next sign-in then replaces it again.
+type passwordRotation struct {
+	cognito      CognitoAPI
+	rotations    rotation.Store
+	rotateBefore time.Time
+
+	readTimeout, writeTimeout time.Duration
+}
+
+// passwordState is what password rotation knows before the policy runs.
+type passwordState struct {
+	// skip is why the password is never replaced, or "".
+	skip       string
+	replacedAt *time.Time
+	stale      bool
+}
+
+// lookup completes the user's sub and status. When the event lacks either,
+// it looks the user up instead of guessing, since replacing the password of
+// a federated or unconfirmed user changes how they sign in.
+func (r *passwordRotation) lookup(ctx context.Context, e *Event, u user) (user, error) {
 	if e.Request.UserNotFound || (u.sub != "" && u.status != "") {
 		return u, nil
 	}
 
-	out, err := h.cognito.AdminGetUser(ctx, &cip.AdminGetUserInput{
+	out, err := r.cognito.AdminGetUser(ctx, &cip.AdminGetUserInput{
 		UserPoolId: aws.String(e.UserPoolID),
 		Username:   aws.String(e.UserName),
 	})
@@ -354,26 +380,51 @@ func (h *Hook) user(ctx context.Context, e *Event) (user, error) {
 	return u, nil
 }
 
-// decide returns the policy's decision, or the default decision when there
-// is no policy or it fails.
-func (h *Hook) decide(ctx context.Context, in PolicyInput) *Decision {
-	if h.policy == nil {
-		return DefaultDecision()
+// read reads the user's rotation record, unless the password is never
+// replaced. An unreadable record counts as stale.
+func (r *passwordRotation) read(ctx, callCtx context.Context, e *Event, u user) passwordState {
+	s := passwordState{skip: SkipReason(e.Request.UserNotFound, u.status), stale: true}
+	if s.skip != "" {
+		return s
 	}
-	d, err := Decide(ctx, h.policy, in)
+
+	readCtx, cancel := context.WithTimeout(callCtx, r.readTimeout)
+	defer cancel()
+	t, err := r.rotations.LastReplaced(readCtx, u.sub)
 	if err != nil {
-		slog.ErrorContext(ctx, "policy failed, applying the default actions", "error", err)
-		return DefaultDecision()
+		slog.WarnContext(ctx, "rotation record unavailable, treating the password as stale", "error", err)
+		return s
 	}
-	return d
+	s.replacedAt, s.stale = t, IsStale(t, r.rotateBefore)
+	return s
 }
 
-func (h *Hook) replacePassword(ctx context.Context, e *Event) error {
+// apply replaces a stale password unless the user or the policy keeps it.
+func (r *passwordRotation) apply(ctx, callCtx context.Context, e *Event, u user, s passwordState, d *Decision) error {
+	switch {
+	case s.skip != "":
+		slog.InfoContext(ctx, "password replacement skipped", "reason", s.skip)
+	case !d.ReplacePassword:
+		slog.InfoContext(ctx, "password replacement skipped", "reason", d.Reason)
+	case !s.stale:
+		slog.InfoContext(ctx, "password already replaced", "replaced_at", s.replacedAt.UTC().Format(time.RFC3339))
+	default:
+		if err := r.replace(callCtx, e); err != nil {
+			slog.ErrorContext(ctx, "password replacement failed", "error", err)
+			return err
+		}
+		slog.InfoContext(ctx, "password replaced")
+		r.record(ctx, u.sub)
+	}
+	return nil
+}
+
+func (r *passwordRotation) replace(ctx context.Context, e *Event) error {
 	pw, err := password.Generate(PasswordLength)
 	if err != nil {
 		return err
 	}
-	_, err = h.cognito.AdminSetUserPassword(ctx, &cip.AdminSetUserPasswordInput{
+	_, err = r.cognito.AdminSetUserPassword(ctx, &cip.AdminSetUserPasswordInput{
 		UserPoolId: aws.String(e.UserPoolID),
 		Username:   aws.String(e.UserName),
 		Password:   aws.String(pw),
@@ -385,10 +436,10 @@ func (h *Hook) replacePassword(ctx context.Context, e *Event) error {
 // record records a replacement. The password is already replaced, so a
 // failure is logged and the sign-in continues; the next sign-in replaces the
 // password again.
-func (h *Hook) record(ctx context.Context, sub string) {
-	writeCtx, cancel := context.WithTimeout(ctx, h.writeTimeout)
+func (r *passwordRotation) record(ctx context.Context, sub string) {
+	writeCtx, cancel := context.WithTimeout(ctx, r.writeTimeout)
 	defer cancel()
-	if err := h.rotations.Record(writeCtx, sub, time.Now()); err != nil {
+	if err := r.rotations.Record(writeCtx, sub, time.Now()); err != nil {
 		slog.ErrorContext(ctx, "password replacement not recorded", "error", err)
 	}
 }

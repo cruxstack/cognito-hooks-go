@@ -124,7 +124,7 @@ fails if any event does. Useful flags:
 | Flag                       | Effect                                                                         |
 | -------------------------- | ------------------------------------------------------------------------------ |
 | `-postconfirmation-policy` | The PostConfirmation policy, for `PostConfirmation_*` events.                  |
-| `-preauthentication-policy` | The PreAuthentication policy, for `PreAuthentication_*` events. eval reads no rotation records, so `passwordReplacedAt` is `null` and `password.replace` means the hook replaces the password if it is stale. |
+| `-preauthentication-policy` | The PreAuthentication policy, for `PreAuthentication_*` events. Outcomes assume password rotation is enabled. eval reads no rotation records, so `passwordReplacedAt` is `null` and `password.replace` means the hook replaces the password if it is stale. |
 | `-verdict Invalid`         | Gives PreSignUp events a SendGrid result with this verdict (`Valid`, `Risky`, `Invalid`). |
 | `-verify-triggers`         | The trigger sources `-verdict` applies to; `PreSignUp_SignUp` by default.      |
 | `-show-input`              | Prints the exact policy input for each event.                                  |

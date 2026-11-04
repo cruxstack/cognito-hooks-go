@@ -44,21 +44,28 @@ type PostConfirmation struct {
 	// is replaced.
 	PolicyPath string
 	// RotationTable is optional. When set, each replacement is recorded in
-	// the PreAuthentication hook's DynamoDB table.
+	// the table of the PreAuthentication hook's password rotation.
 	RotationTable string
 }
 
 // PreAuthentication configures the PreAuthentication hook.
 type PreAuthentication struct {
 	Enabled bool
-	// PolicyPath is optional; without a policy every native, confirmed
-	// user's stale password is replaced.
+	// PolicyPath is optional.
 	PolicyPath string
+	// PasswordRotation is off by default.
+	PasswordRotation PasswordRotation
+}
+
+// PasswordRotation configures the PreAuthentication hook's password
+// rotation. Its settings are only required when it is enabled.
+type PasswordRotation struct {
+	Enabled bool
 	// RotateBefore is the cutoff: a password the hooks haven't replaced
 	// since this time is replaced at the user's next sign-in.
 	RotateBefore time.Time
-	// RotationTable is the DynamoDB table that records each replacement.
-	RotationTable string
+	// Table is the DynamoDB table that records each replacement.
+	Table string
 }
 
 // EmailVerification configures email verification for the PreSignUp hook.
@@ -118,10 +125,13 @@ func Load(lookup func(string) (string, bool)) (*Config, error) {
 			RotationTable: r.str("APP_POSTCONFIRMATION_ROTATION_TABLE"),
 		},
 		PreAuthentication: PreAuthentication{
-			Enabled:       r.boolean("APP_PREAUTHENTICATION_ENABLED"),
-			PolicyPath:    r.str("APP_PREAUTHENTICATION_POLICY_PATH"),
-			RotateBefore:  r.timestamp("APP_PREAUTHENTICATION_ROTATE_BEFORE"),
-			RotationTable: r.str("APP_PREAUTHENTICATION_ROTATION_TABLE"),
+			Enabled:    r.boolean("APP_PREAUTHENTICATION_ENABLED"),
+			PolicyPath: r.str("APP_PREAUTHENTICATION_POLICY_PATH"),
+			PasswordRotation: PasswordRotation{
+				Enabled:      r.boolean("APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED"),
+				RotateBefore: r.timestamp("APP_PREAUTHENTICATION_ROTATE_BEFORE"),
+				Table:        r.str("APP_PREAUTHENTICATION_ROTATION_TABLE"),
+			},
 		},
 		EmailVerification: EmailVerification{
 			Enabled:   r.boolean("APP_EMAIL_VERIFICATION_ENABLED"),
@@ -168,16 +178,18 @@ func (c *Config) validate() []error {
 		}
 	}
 
-	if p := c.PreAuthentication; p.Enabled {
-		req(p.RotationTable != "", "APP_PREAUTHENTICATION_ROTATION_TABLE is required when APP_PREAUTHENTICATION_ENABLED is true")
+	// password rotation's settings are required, and the cutoff's age is
+	// checked, only when it is enabled, so it can be turned off on its own
+	if r := c.PreAuthentication.PasswordRotation; c.PreAuthentication.Enabled && r.Enabled {
+		req(r.Table != "", "APP_PREAUTHENTICATION_ROTATION_TABLE is required when APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED is true")
 		switch {
-		case p.RotateBefore.IsZero():
-			req(false, "APP_PREAUTHENTICATION_ROTATE_BEFORE is required when APP_PREAUTHENTICATION_ENABLED is true")
-		case p.RotateBefore.After(now()):
+		case r.RotateBefore.IsZero():
+			req(false, "APP_PREAUTHENTICATION_ROTATE_BEFORE is required when APP_PREAUTHENTICATION_PASSWORD_ROTATION_ENABLED is true")
+		case r.RotateBefore.After(now()):
 			// every replacement would be before the cutoff, so every sign-in
 			// would replace the password again until the cutoff passes
 			errs = append(errs, fmt.Errorf("APP_PREAUTHENTICATION_ROTATE_BEFORE: %s is in the future: use a time that has passed, such as when the passwords were exposed",
-				p.RotateBefore.Format(time.RFC3339)))
+				r.RotateBefore.Format(time.RFC3339)))
 		}
 	}
 

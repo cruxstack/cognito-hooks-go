@@ -59,7 +59,7 @@ the users above and for app clients that still allow password flows.
    from `crypto/rand` that always includes lowercase, uppercase, digit, and
    symbol characters.
 3. With `APP_POSTCONFIRMATION_ROTATION_TABLE`, it records the replacement in
-   the [PreAuthentication hook's rotation table](preauthentication.md#rotation-records),
+   the [PreAuthentication hook's password rotation table](preauthentication.md#rotation-records),
    so that hook doesn't replace the password again at the user's first
    sign-in. This needs `dynamodb:PutItem` on the table.
 
