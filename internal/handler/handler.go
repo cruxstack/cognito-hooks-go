@@ -14,6 +14,7 @@ import (
 
 	"github.com/cruxstack/cognito-hooks-go/internal/logging"
 	"github.com/cruxstack/cognito-hooks-go/internal/postconfirmation"
+	"github.com/cruxstack/cognito-hooks-go/internal/preauthentication"
 	"github.com/cruxstack/cognito-hooks-go/internal/presignup"
 )
 
@@ -25,8 +26,9 @@ type Hook[E any] interface {
 
 // Handler holds the enabled hooks. A nil hook is disabled.
 type Handler struct {
-	PreSignUp        Hook[presignup.Event]
-	PostConfirmation Hook[postconfirmation.Event]
+	PreSignUp         Hook[presignup.Event]
+	PostConfirmation  Hook[postconfirmation.Event]
+	PreAuthentication Hook[preauthentication.Event]
 }
 
 // Handle decodes one event, routes it to its hook, and returns the event the
@@ -34,8 +36,8 @@ type Handler struct {
 //
 // An event for a disabled hook or an unknown trigger is an error. Cognito
 // triggers are synchronous, so the error reaches the user (a PreSignUp error
-// rejects the sign-up) and points at the misconfiguration, instead of letting
-// events through unchecked.
+// rejects the sign-up, and a PreAuthentication error the sign-in) and points
+// at the misconfiguration, instead of letting events through unchecked.
 func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) (any, error) {
 	var hdr events.CognitoEventUserPoolsHeader
 	if err := json.Unmarshal(raw, &hdr); err != nil {
@@ -61,6 +63,8 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) (any, error) 
 		return dispatch(ctx, raw, h.PreSignUp)
 	case strings.HasPrefix(t, postconfirmation.TriggerPrefix):
 		return dispatch(ctx, raw, h.PostConfirmation)
+	case strings.HasPrefix(t, preauthentication.TriggerPrefix):
+		return dispatch(ctx, raw, h.PreAuthentication)
 	default:
 		slog.ErrorContext(ctx, "unsupported trigger source")
 		return nil, fmt.Errorf("trigger source %q is not supported", t)

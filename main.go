@@ -1,6 +1,6 @@
 // Command bootstrap is the AWS Lambda function for Amazon Cognito user pool
-// hooks (PreSignUp and PostConfirmation). Build it for the provided.al2023
-// runtime:
+// hooks (PreSignUp, PostConfirmation, and PreAuthentication). Build it for
+// the provided.al2023 runtime:
 //
 //	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o bootstrap .
 package main
@@ -54,6 +54,7 @@ func run(ctx context.Context, level *slog.LevelVar) error {
 		"revision", revision(),
 		"presignup_enabled", cfg.PreSignUp.Enabled,
 		"postconfirmation_enabled", cfg.PostConfirmation.Enabled,
+		"preauthentication_enabled", cfg.PreAuthentication.Enabled,
 		"email_verification_enabled", cfg.PreSignUp.Enabled && cfg.EmailVerification.Enabled,
 	)
 	lambda.Start(h.Handle)

@@ -1,21 +1,25 @@
 // Package e2e tests the function end to end: configuration is read from
 // environment variables and wired by app.New exactly as in Lambda, and events
-// go through the same handler. Only the Cognito API and the SendGrid API are
-// replaced with in-process fakes.
+// go through the same handler. Only the Cognito, DynamoDB, and SendGrid APIs
+// are replaced with in-process fakes.
 package e2e
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	cip "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/cruxstack/cognito-hooks-go/internal/app"
 	"github.com/cruxstack/cognito-hooks-go/internal/config"
@@ -29,6 +33,7 @@ type env struct {
 	t        *testing.T
 	handler  *handler.Handler
 	cognito  *fakeCognito
+	dynamodb *fakeDynamoDB
 	sendgrid *fakeSendGrid
 }
 
@@ -36,7 +41,14 @@ type env struct {
 // Lambda would pass.
 func newEnv(t *testing.T, vars map[string]string) *env {
 	t.Helper()
-	e := &env{t: t, cognito: &fakeCognito{}, sendgrid: newFakeSendGrid(t)}
+	return newEnvWith(t, vars, newFakeDynamoDB())
+}
+
+// newEnvWith builds the function with an existing DynamoDB fake, as a new
+// deployment with the same rotation table would see it.
+func newEnvWith(t *testing.T, vars map[string]string, ddb *fakeDynamoDB) *env {
+	t.Helper()
+	e := &env{t: t, cognito: &fakeCognito{}, dynamodb: ddb, sendgrid: newFakeSendGrid(t)}
 
 	all := map[string]string{"APP_SENDGRID_API_HOST": e.sendgrid.URL}
 	maps.Copy(all, vars)
@@ -47,6 +59,7 @@ func newEnv(t *testing.T, vars map[string]string) *env {
 
 	e.handler, err = app.New(context.Background(), cfg, aws.Config{Region: "us-east-1"},
 		app.WithCognitoClient(e.cognito),
+		app.WithDynamoDBClient(e.dynamodb),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +115,24 @@ func postConfirmationEvent(trigger, clientID, status string) json.RawMessage {
 	}, map[string]any{})
 }
 
+func preAuthenticationEvent(userName string, attrs map[string]string, userNotFound bool) json.RawMessage {
+	return event("PreAuthentication_Authentication", "1example23456789", userName, map[string]any{
+		"userAttributes": attrs,
+		"validationData": map[string]string{},
+		"userNotFound":   userNotFound,
+	}, map[string]any{})
+}
+
+// signIn is a PreAuthentication event for a native user with a status.
+func signIn(sub, status string) json.RawMessage {
+	return preAuthenticationEvent(sub, map[string]string{
+		"sub":                 sub,
+		"email":               "user@example.com",
+		"email_verified":      "true",
+		"cognito:user_status": status,
+	}, false)
+}
+
 func event(trigger, clientID, userName string, request, response map[string]any) json.RawMessage {
 	b, err := json.Marshal(map[string]any{
 		"version":       "1",
@@ -123,6 +154,20 @@ type fakeCognito struct {
 	mu    sync.Mutex
 	calls []*cip.AdminSetUserPasswordInput
 	err   error
+
+	// users are the users AdminGetUser finds, by username
+	users   map[string]*cip.AdminGetUserOutput
+	lookups int
+}
+
+func (f *fakeCognito) AdminGetUser(_ context.Context, in *cip.AdminGetUserInput, _ ...func(*cip.Options)) (*cip.AdminGetUserOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lookups++
+	if u, ok := f.users[aws.ToString(in.Username)]; ok {
+		return u, nil
+	}
+	return nil, errors.New("UserNotFoundException: User does not exist.")
 }
 
 func (f *fakeCognito) AdminSetUserPassword(_ context.Context, in *cip.AdminSetUserPasswordInput, _ ...func(*cip.Options)) (*cip.AdminSetUserPasswordOutput, error) {
@@ -143,6 +188,65 @@ func (f *fakeCognito) replaced() []string {
 		out[i] = aws.ToString(in.UserPoolId) + "/" + aws.ToString(in.Username)
 	}
 	return out
+}
+
+// fakeDynamoDB stores items by table and sub, as the rotation table does.
+type fakeDynamoDB struct {
+	mu       sync.Mutex
+	items    map[string]map[string]ddbtypes.AttributeValue
+	getErr   error
+	putErr   error
+	gets     int
+	putCount int
+}
+
+func newFakeDynamoDB() *fakeDynamoDB {
+	return &fakeDynamoDB{items: map[string]map[string]ddbtypes.AttributeValue{}}
+}
+
+func itemKey(table string, key map[string]ddbtypes.AttributeValue) string {
+	sub, _ := key["sub"].(*ddbtypes.AttributeValueMemberS)
+	if sub == nil {
+		return table + "/"
+	}
+	return table + "/" + sub.Value
+}
+
+func (f *fakeDynamoDB) GetItem(_ context.Context, in *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gets++
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return &dynamodb.GetItemOutput{Item: f.items[itemKey(aws.ToString(in.TableName), in.Key)]}, nil
+}
+
+func (f *fakeDynamoDB) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.putCount++
+	if f.putErr != nil {
+		return nil, f.putErr
+	}
+	f.items[itemKey(aws.ToString(in.TableName), in.Item)] = in.Item
+	return &dynamodb.PutItemOutput{}, nil
+}
+
+// replacedAt returns the recorded replacement time of a user, if any.
+func (f *fakeDynamoDB) replacedAt(table, sub string) (time.Time, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	item, ok := f.items[table+"/"+sub]
+	if !ok {
+		return time.Time{}, false
+	}
+	v, _ := item["replaced_at"].(*ddbtypes.AttributeValueMemberS)
+	if v == nil {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, v.Value)
+	return t, err == nil
 }
 
 // fakeSendGrid serves the SendGrid Email Address Validation API.

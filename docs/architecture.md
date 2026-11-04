@@ -6,11 +6,14 @@ routes the event to the hook for its trigger source, which returns the
 (possibly changed) event or an error.
 
 ```text
-Cognito ─▶ handler ─┬─▶ PreSignUp:        verify ─▶ policy ─▶ actions ─▶ allow (flags) / deny (error)
-           (routes  │                     (SendGrid) (Rego)
+Cognito ─▶ handler ─┬─▶ PreSignUp:         verify ─▶ policy ─▶ actions ─▶ allow (flags) / deny (error)
+           (routes  │                      (SendGrid) (Rego)
            by trigger)
-                    └─▶ PostConfirmation: policy ─▶ actions ─▶ AdminSetUserPassword
-                                          (Rego)               (Cognito; not for federated users)
+                    ├─▶ PostConfirmation:  policy ─▶ actions ─▶ AdminSetUserPassword ─▶ record
+                    │                      (Rego)               (Cognito; not for       (DynamoDB;
+                    │                                            federated users)        optional)
+                    └─▶ PreAuthentication: record ─▶ policy ─▶ actions ─▶ AdminSetUserPassword ─▶ record
+                                           (DynamoDB) (Rego)              (only if stale)         (DynamoDB)
 ```
 
 Each policy returns a list of [actions](policies.md#actions), such as
@@ -28,6 +31,8 @@ restrictive action wins) and carries them out in its own order.
 | `internal/handler`          | Decodes the event, adds log context, and routes it by trigger source to a hook.                      |
 | `internal/presignup`        | The PreSignUp hook: policy input, resolving its actions, and email verification.                     |
 | `internal/postconfirmation` | The PostConfirmation hook: the optional policy, its actions, and the password replacement.          |
+| `internal/preauthentication` | The PreAuthentication hook: the cutoff, the optional policy, its actions, and the password replacement. |
+| `internal/rotation`         | Records of when the hooks last replaced each password, in DynamoDB.                                  |
 | `internal/cognito`          | The policy input fields every hook shares.                                                           |
 | `internal/policy`           | Compiles and evaluates Rego policies.                                                                |
 | `internal/action`           | Decodes the actions a policy returns (`{"actions": [...]}`), which each hook resolves.               |
@@ -37,9 +42,9 @@ restrictive action wins) and carries them out in its own order.
 | `internal/logging`          | The JSON log handler with per-event context, and email masking.                                      |
 
 Dependencies point one way: `app` knows every package, and the hooks depend
-on small interfaces (`verify.Verifier`, `postconfirmation.CognitoAPI`)
-rather than on configuration or AWS clients, which keeps them testable with
-fakes.
+on small interfaces (`verify.Verifier`, `postconfirmation.CognitoAPI`,
+`preauthentication.CognitoAPI`, `rotation.Store`) rather than on
+configuration or AWS clients, which keeps them testable with fakes.
 
 ## Failure handling
 
@@ -53,12 +58,18 @@ app that made the request. Each hook decides what an error means for it.
   error couldn't undo anything. A failed or invalid policy falls back to
   the default actions, which replace the password, and a failed replacement
   is logged.
+- **PreAuthentication fails closed.** When it can't tell whether a password
+  may be kept, or can't replace a stale one, it rejects the sign-in, so an
+  old password is never checked. A failed or invalid policy falls back to
+  the default actions, an unreadable rotation record counts as stale, and a
+  replacement that can't be recorded is logged and allowed.
 - **Misrouted events are errors.** An event for a hook that isn't enabled,
   or for an unsupported trigger, returns an error instead of passing
   through, so a function attached to the wrong trigger is noticed.
 
-The hook pages have the full tables: [PreSignUp](presignup.md#failure-handling)
-and [PostConfirmation](postconfirmation.md#failure-handling).
+The hook pages have the full tables: [PreSignUp](presignup.md#failure-handling),
+[PostConfirmation](postconfirmation.md#failure-handling), and
+[PreAuthentication](preauthentication.md#failure-handling).
 
 ## Design notes
 
@@ -68,9 +79,13 @@ and [PostConfirmation](postconfirmation.md#failure-handling).
 - **Policies are compiled once,** at startup, and evaluated per event. A
   policy must define the rule its hook queries, so a misspelled package or
   rule name fails at startup rather than on every event.
-- **Error messages are for users.** Cognito shows a PreSignUp error message
-  to the user, so the hook returns the policy's reason or a generic message,
-  and logs the details.
+- **Error messages are for users.** Cognito shows PreSignUp and
+  PreAuthentication error messages to the user, so the hooks return the
+  policy's reason or a generic message, and log the details.
+- **AWS calls fit in Cognito's 5 seconds.** The SDK clients retry a call at
+  most once, soon after the first attempt, and the PreAuthentication hook
+  puts deadlines on its calls, so the function returns its own error before
+  Cognito gives up.
 - **Personal data stays out of logs** unless `APP_LOG_LEVEL=debug`: email
   addresses are masked, and passwords are never logged.
 

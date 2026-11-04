@@ -11,6 +11,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -21,6 +22,7 @@ import (
 	"github.com/cruxstack/cognito-hooks-go/internal/logging"
 	"github.com/cruxstack/cognito-hooks-go/internal/password"
 	"github.com/cruxstack/cognito-hooks-go/internal/policy"
+	"github.com/cruxstack/cognito-hooks-go/internal/rotation"
 )
 
 // PolicyQuery is the rule the optional PostConfirmation policy must define.
@@ -59,6 +61,9 @@ const PasswordLength = 128
 
 // UserStatusExternalProvider is the cognito:user_status of federated users.
 const UserStatusExternalProvider = "EXTERNAL_PROVIDER"
+
+// RecordTimeout bounds recording a replacement in the rotation table.
+const RecordTimeout = 500 * time.Millisecond
 
 // Event is a PostConfirmation trigger event.
 type Event = events.CognitoEventUserPoolsPostConfirmation
@@ -154,12 +159,16 @@ type Config struct {
 	// Policy decides the actions for each user. Without one, every native
 	// user's password is replaced.
 	Policy *policy.Engine
+	// Rotations, when set, records each replacement, so the PreAuthentication
+	// hook doesn't replace the password again at the user's first sign-in.
+	Rotations rotation.Store
 }
 
 // Hook handles PostConfirmation events.
 type Hook struct {
-	cognito CognitoAPI
-	policy  *policy.Engine
+	cognito   CognitoAPI
+	policy    *policy.Engine
+	rotations rotation.Store
 }
 
 // New returns the hook.
@@ -167,14 +176,15 @@ func New(cfg Config) (*Hook, error) {
 	if cfg.Cognito == nil {
 		return nil, errors.New("postconfirmation: a cognito client is required")
 	}
-	return &Hook{cognito: cfg.Cognito, policy: cfg.Policy}, nil
+	return &Hook{cognito: cfg.Cognito, policy: cfg.Policy, rotations: cfg.Rotations}, nil
 }
 
 // Handle runs the policy and carries out its decision. It never returns an
 // error: Cognito has already confirmed the user, so failing would show the
 // user an error without undoing anything. When the policy fails, the hook
 // replaces the password anyway; a failed replacement is logged as "password
-// replacement failed".
+// replacement failed", and one that can't be recorded as "password
+// replacement not recorded".
 func (h *Hook) Handle(ctx context.Context, e *Event) error {
 	ctx = logging.WithAttrs(ctx, slog.String("sub", e.Request.UserAttributes["sub"]))
 
@@ -222,4 +232,19 @@ func (h *Hook) replacePassword(ctx context.Context, e *Event) {
 		return
 	}
 	slog.InfoContext(ctx, "password replaced")
+	h.record(ctx, e.Request.UserAttributes["sub"])
+}
+
+// record records the replacement when there is a rotation table. Without
+// the record, the PreAuthentication hook replaces the password again at the
+// user's next sign-in, so a failure is only logged.
+func (h *Hook) record(ctx context.Context, sub string) {
+	if h.rotations == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, RecordTimeout)
+	defer cancel()
+	if err := h.rotations.Record(ctx, sub, time.Now()); err != nil {
+		slog.ErrorContext(ctx, "password replacement not recorded", "error", err)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cruxstack/cognito-hooks-go/internal/postconfirmation"
+	"github.com/cruxstack/cognito-hooks-go/internal/preauthentication"
 	"github.com/cruxstack/cognito-hooks-go/internal/presignup"
 )
 
@@ -32,6 +33,10 @@ func TestHandle_RoutesByTrigger(t *testing.T) {
 			got = append(got, "postconfirmation:"+e.UserName)
 			return nil
 		}),
+		PreAuthentication: hookFunc[preauthentication.Event](func(_ context.Context, e *preauthentication.Event) error {
+			got = append(got, "preauthentication:"+e.UserName)
+			return nil
+		}),
 	}
 
 	resp, err := h.Handle(context.Background(), raw(presignup.TriggerSignUp))
@@ -47,7 +52,15 @@ func TestHandle_RoutesByTrigger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if want := []string{"presignup:a@example.com", "postconfirmation:user-1"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	resp, err = h.Handle(context.Background(), raw(preauthentication.TriggerAuthentication))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(resp); !strings.Contains(string(b), `"triggerSource":"PreAuthentication_Authentication"`) {
+		t.Errorf("response = %s, want the event", b)
+	}
+
+	if want := []string{"presignup:a@example.com", "postconfirmation:user-1", "preauthentication:user-1"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("calls = %v, want %v", got, want)
 	}
 }
@@ -65,7 +78,8 @@ func TestHandle_Errors(t *testing.T) {
 
 	tests := map[string]json.RawMessage{
 		"disabled hook":       raw(presignup.TriggerSignUp),
-		"unsupported trigger": raw("PreAuthentication_Authentication"),
+		"disabled preauth":    raw(preauthentication.TriggerAuthentication),
+		"unsupported trigger": raw("PostAuthentication_Authentication"),
 		"not json":            json.RawMessage(`not json`),
 		"wrong shape":         json.RawMessage(`{"triggerSource":"PostConfirmation_ConfirmSignUp","request":"x"}`),
 	}

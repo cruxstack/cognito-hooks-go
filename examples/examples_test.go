@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	cip "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/open-policy-agent/opa/v1/tester"
 
 	"github.com/cruxstack/cognito-hooks-go/internal/policy"
 	"github.com/cruxstack/cognito-hooks-go/internal/postconfirmation"
+	"github.com/cruxstack/cognito-hooks-go/internal/preauthentication"
 	"github.com/cruxstack/cognito-hooks-go/internal/presignup"
 	"github.com/cruxstack/cognito-hooks-go/internal/verify"
 )
@@ -156,6 +158,17 @@ func (c *countingCognito) AdminSetUserPassword(context.Context, *cip.AdminSetUse
 	return &cip.AdminSetUserPasswordOutput{}, nil
 }
 
+// AdminGetUser fails: every sample event has a status and a sub.
+func (c *countingCognito) AdminGetUser(context.Context, *cip.AdminGetUserInput, ...func(*cip.Options)) (*cip.AdminGetUserOutput, error) {
+	return nil, errors.New("unexpected AdminGetUser call")
+}
+
+// emptyStore has no rotation records.
+type emptyStore struct{}
+
+func (emptyStore) LastReplaced(context.Context, string) (*time.Time, error) { return nil, nil }
+func (emptyStore) Record(context.Context, string, time.Time) error          { return nil }
+
 var postConfirmationTests = map[string][]bool{
 	// events: sign-up confirmation, password reset, federated user, test
 	// client; true means the password is replaced
@@ -191,6 +204,47 @@ func TestPostConfirmationPolicies(t *testing.T) {
 	}
 }
 
+var preAuthenticationTests = map[string][]bool{
+	// events: native user, federated user, unconfirmed user, unknown user,
+	// test user by sub, test user by username; true means the password is
+	// replaced (no event's user has a rotation record)
+	"":                {true, false, false, false, true, true},
+	"skip-users.rego": {true, false, false, false, false, false},
+}
+
+func TestPreAuthenticationPolicies(t *testing.T) {
+	events := readEvents[preauthentication.Event](t, "events/preauthentication.json")
+	for name, want := range preAuthenticationTests {
+		t.Run("policy="+name, func(t *testing.T) {
+			var pol *policy.Engine
+			if name != "" {
+				pol = load(t, filepath.Join("policies/preauthentication", name), preauthentication.PolicyQuery)
+			}
+			if len(want) != len(events) {
+				t.Fatalf("test has %d expectations for %d events", len(want), len(events))
+			}
+			for i, e := range events {
+				c := &countingCognito{}
+				h, err := preauthentication.New(preauthentication.Config{
+					Cognito:      c,
+					Rotations:    emptyStore{},
+					RotateBefore: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+					Policy:       pol,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := h.Handle(context.Background(), e); err != nil {
+					t.Fatal(err)
+				}
+				if got := c.calls == 1; got != want[i] {
+					t.Errorf("event %d (%s): replaced = %v, want %v", i, e.UserName, got, want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestEveryPolicyIsTested(t *testing.T) {
 	tested := map[string]bool{}
 	for name := range preSignUpTests {
@@ -198,6 +252,9 @@ func TestEveryPolicyIsTested(t *testing.T) {
 	}
 	for name := range postConfirmationTests {
 		tested["policies/postconfirmation/"+name] = true
+	}
+	for name := range preAuthenticationTests {
+		tested["policies/preauthentication/"+name] = true
 	}
 
 	files, err := filepath.Glob("policies/*/*.rego")
@@ -214,8 +271,9 @@ func TestEveryPolicyIsTested(t *testing.T) {
 // The Terraform module requires a policy to start with its package line.
 func TestPoliciesStartWithTheirPackage(t *testing.T) {
 	for dir, pkg := range map[string]string{
-		"policies/presignup":        "package cognito_hook_presignup\n",
-		"policies/postconfirmation": "package cognito_hook_postconfirmation\n",
+		"policies/presignup":         "package cognito_hook_presignup\n",
+		"policies/postconfirmation":  "package cognito_hook_postconfirmation\n",
+		"policies/preauthentication": "package cognito_hook_preauthentication\n",
 	} {
 		files, _ := filepath.Glob(filepath.Join(dir, "*.rego"))
 		for _, f := range files {

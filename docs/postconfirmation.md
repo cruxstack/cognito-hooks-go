@@ -58,6 +58,10 @@ the users above and for app clients that still allow password flows.
    calls `AdminSetUserPassword` with `Permanent: true` and a random password
    from `crypto/rand` that always includes lowercase, uppercase, digit, and
    symbol characters.
+3. With `APP_POSTCONFIRMATION_ROTATION_TABLE`, it records the replacement in
+   the [PreAuthentication hook's rotation table](preauthentication.md#rotation-records),
+   so that hook doesn't replace the password again at the user's first
+   sign-in. This needs `dynamodb:PutItem` on the table.
 
 ## Policy
 
@@ -118,6 +122,7 @@ actions, so the password is replaced.
 | The policy returns `password.skip`                            | password kept; logged with the policy's reason     |
 | The policy fails, has no result, or returns an unknown action or parameter | default actions; the policy error is logged |
 | `AdminSetUserPassword` fails                                  | logged as `password replacement failed`; success   |
+| Recording the replacement fails                               | logged as `password replacement not recorded`; success. The PreAuthentication hook replaces the password again at the next sign-in. |
 | The policy doesn't compile or define its `result` rule        | the function doesn't start                         |
 
 ## Monitoring

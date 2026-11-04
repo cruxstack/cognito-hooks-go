@@ -13,6 +13,7 @@ import (
 
 	"github.com/cruxstack/cognito-hooks-go/internal/policy"
 	"github.com/cruxstack/cognito-hooks-go/internal/postconfirmation"
+	"github.com/cruxstack/cognito-hooks-go/internal/preauthentication"
 	"github.com/cruxstack/cognito-hooks-go/internal/presignup"
 	"github.com/cruxstack/cognito-hooks-go/internal/verify"
 )
@@ -29,10 +30,11 @@ type evalResult struct {
 }
 
 type evalOptions struct {
-	presignup        *policy.Engine
-	postconfirmation *policy.Engine
-	verification     *verify.Result
-	verifyTriggers   []string
+	presignup         *policy.Engine
+	postconfirmation  *policy.Engine
+	preauthentication *policy.Engine
+	verification      *verify.Result
+	verifyTriggers    []string
 }
 
 func evalCmd(ctx context.Context, args []string, out io.Writer) error {
@@ -40,6 +42,7 @@ func evalCmd(ctx context.Context, args []string, out io.Writer) error {
 	eventsPath := fs.String("events", "", "JSON file with an event or an array of events (required)")
 	preSignUpPolicy := fs.String("presignup-policy", "", "PreSignUp policy (required for PreSignUp events)")
 	postConfirmationPolicy := fs.String("postconfirmation-policy", "", "PostConfirmation policy (optional; without one every native user's password is replaced)")
+	preAuthenticationPolicy := fs.String("preauthentication-policy", "", "PreAuthentication policy (optional; without one every native, confirmed user's stale password is replaced)")
 	verdict := fs.String("verdict", "", "give PreSignUp policies an email verification result with this verdict: Valid, Risky, or Invalid")
 	verifyTriggers := fs.String("verify-triggers", presignup.TriggerSignUp, "comma-separated trigger sources -verdict applies to, as in APP_EMAIL_VERIFICATION_FOR_TRIGGER_SOURCES")
 	showInput := fs.Bool("show-input", false, "print the policy input for each event")
@@ -66,6 +69,11 @@ func evalCmd(ctx context.Context, args []string, out io.Writer) error {
 	}
 	if *postConfirmationPolicy != "" {
 		if o.postconfirmation, err = policy.Load(ctx, *postConfirmationPolicy, postconfirmation.PolicyQuery); err != nil {
+			return err
+		}
+	}
+	if *preAuthenticationPolicy != "" {
+		if o.preauthentication, err = policy.Load(ctx, *preAuthenticationPolicy, preauthentication.PolicyQuery); err != nil {
 			return err
 		}
 	}
@@ -156,6 +164,27 @@ func evalEvent(ctx context.Context, raw json.RawMessage, res *evalResult, o eval
 		res.Decision = d
 		res.Outcome = postConfirmationOutcome(&e, d)
 
+	case strings.HasPrefix(h.TriggerSource, preauthentication.TriggerPrefix):
+		var e preauthentication.Event
+		if err := json.Unmarshal(raw, &e); err != nil {
+			res.Error = fmt.Sprintf("decode event: %v", err)
+			return
+		}
+		// eval reads no rotation records, so the policy sees none
+		in := preauthentication.NewPolicyInput(&e, nil)
+		res.Input = in
+
+		d := preauthentication.DefaultDecision()
+		if o.preauthentication != nil {
+			var err error
+			if d, err = preauthentication.Decide(ctx, o.preauthentication, in); err != nil {
+				res.Error = err.Error() + " (the hook applies the default actions when the policy fails)"
+				return
+			}
+		}
+		res.Decision = d
+		res.Outcome = preAuthenticationOutcome(&e, d)
+
 	default:
 		res.Error = "unsupported trigger source"
 	}
@@ -196,6 +225,26 @@ func postConfirmationOutcome(e *postconfirmation.Event, d *postconfirmation.Deci
 		return postconfirmation.ActionSkipPassword
 	}
 	return postconfirmation.ActionReplacePassword
+}
+
+// preAuthenticationOutcome is "password.replace", or "password.skip:
+// <reason>". The hook carries out password.replace only for a stale
+// password, which eval can't tell: it reads no rotation records. Nor does it
+// look up a user whose event lacks cognito:user_status, as the hook does.
+func preAuthenticationOutcome(e *preauthentication.Event, d *preauthentication.Decision) string {
+	status := e.Request.UserAttributes["cognito:user_status"]
+	if reason := preauthentication.SkipReason(e.Request.UserNotFound, status); reason != "" {
+		return preauthentication.ActionSkipPassword + ": " + reason
+	}
+	switch {
+	case !d.ReplacePassword && d.Reason != "":
+		return preauthentication.ActionSkipPassword + ": " + d.Reason
+	case !d.ReplacePassword:
+		return preauthentication.ActionSkipPassword
+	case status == "":
+		return preauthentication.ActionReplacePassword + " unless AdminGetUser finds a federated or unconfirmed user"
+	}
+	return preauthentication.ActionReplacePassword
 }
 
 // syntheticVerification returns a SendGrid-like result with the verdict.

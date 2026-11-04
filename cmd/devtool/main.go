@@ -7,7 +7,8 @@
 //	devtool run -events events.json
 //	    Run events through the whole function with the configuration from the
 //	    environment and .env, and print each response. Passwords are not
-//	    changed unless you pass -live.
+//	    changed, and rotation records not read or written, unless you pass
+//	    -live.
 package main
 
 import (

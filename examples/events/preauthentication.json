@@ -1,0 +1,129 @@
+[
+  {
+    "version": "1",
+    "triggerSource": "PreAuthentication_Authentication",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "8a1b2c3d-0000-4000-8000-000000000001",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "1example23456789"
+    },
+    "request": {
+      "userAttributes": {
+        "sub": "8a1b2c3d-0000-4000-8000-000000000001",
+        "email": "emma@example.com",
+        "email_verified": "true",
+        "cognito:user_status": "CONFIRMED"
+      },
+      "validationData": {},
+      "userNotFound": false
+    },
+    "response": {}
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreAuthentication_Authentication",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "google_104536843271940000001",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "1example23456789"
+    },
+    "request": {
+      "userAttributes": {
+        "sub": "8a1b2c3d-0000-4000-8000-000000000004",
+        "email": "olivia@gmail.test",
+        "email_verified": "true",
+        "cognito:user_status": "EXTERNAL_PROVIDER"
+      },
+      "validationData": {},
+      "userNotFound": false
+    },
+    "response": {}
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreAuthentication_Authentication",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "8a1b2c3d-0000-4000-8000-000000000006",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "1example23456789"
+    },
+    "request": {
+      "userAttributes": {
+        "sub": "8a1b2c3d-0000-4000-8000-000000000006",
+        "email": "liam@example.com",
+        "email_verified": "false",
+        "cognito:user_status": "UNCONFIRMED"
+      },
+      "validationData": {},
+      "userNotFound": false
+    },
+    "response": {}
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreAuthentication_Authentication",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "mallory@mailinator.test",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "1example23456789"
+    },
+    "request": {
+      "userAttributes": {},
+      "validationData": {},
+      "userNotFound": true
+    },
+    "response": {}
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreAuthentication_Authentication",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "8a1b2c3d-0000-4000-8000-000000000005",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "1example23456789"
+    },
+    "request": {
+      "userAttributes": {
+        "sub": "8a1b2c3d-0000-4000-8000-000000000005",
+        "email": "e2e+1@example.com",
+        "email_verified": "true",
+        "cognito:user_status": "CONFIRMED"
+      },
+      "validationData": {},
+      "userNotFound": false
+    },
+    "response": {}
+  },
+  {
+    "version": "1",
+    "triggerSource": "PreAuthentication_Authentication",
+    "region": "us-east-1",
+    "userPoolId": "us-east-1_EXAMPLE",
+    "userName": "e2e-runner",
+    "callerContext": {
+      "awsSdkVersion": "aws-sdk-unknown-unknown",
+      "clientId": "1example23456789"
+    },
+    "request": {
+      "userAttributes": {
+        "sub": "8a1b2c3d-0000-4000-8000-000000000007",
+        "email": "e2e+2@example.com",
+        "email_verified": "true",
+        "cognito:user_status": "CONFIRMED"
+      },
+      "validationData": {},
+      "userNotFound": false
+    },
+    "response": {}
+  }
+]

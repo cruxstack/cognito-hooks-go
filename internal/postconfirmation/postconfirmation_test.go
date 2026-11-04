@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	cip "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
@@ -157,6 +158,70 @@ func TestHandle_CognitoErrorDoesNotFail(t *testing.T) {
 	}
 	if len(c.calls) != 1 {
 		t.Errorf("AdminSetUserPassword calls = %d, want 1", len(c.calls))
+	}
+}
+
+type fakeStore struct {
+	records map[string]time.Time
+	err     error
+}
+
+func (s *fakeStore) LastReplaced(context.Context, string) (*time.Time, error) { return nil, nil }
+
+func (s *fakeStore) Record(_ context.Context, sub string, t time.Time) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.records[sub] = t
+	return nil
+}
+
+// With a rotation table, each replacement is recorded so the
+// PreAuthentication hook doesn't replace the password again.
+func TestHandle_RecordsReplacements(t *testing.T) {
+	tests := map[string]struct {
+		status     string
+		cognitoErr error
+		policy     string
+		want       bool
+	}{
+		"replaced":       {"CONFIRMED", nil, "", true},
+		"federated":      {UserStatusExternalProvider, nil, "", false},
+		"skipped":        {"CONFIRMED", nil, `result := {"actions": ["password.skip"]}`, false},
+		"failed replace": {"CONFIRMED", errors.New("TooManyRequestsException"), "", false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := &fakeStore{records: map[string]time.Time{}}
+			var pol *policy.Engine
+			if tt.policy != "" {
+				pol = compile(t, tt.policy)
+			}
+			h, err := New(Config{Cognito: &fakeCognito{err: tt.cognitoErr}, Policy: pol, Rotations: s})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := time.Now()
+			if err := h.Handle(context.Background(), event(TriggerConfirmSignUp, tt.status)); err != nil {
+				t.Fatal(err)
+			}
+			at, ok := s.records["8a1b2c3d-0000-4000-8000-000000000001"]
+			if ok != tt.want || (ok && at.Before(before)) {
+				t.Errorf("record = %v, %v; want recorded = %v", at, ok, tt.want)
+			}
+		})
+	}
+}
+
+// The password is already replaced, so a failed write is only logged.
+func TestHandle_UnwritableRecordDoesNotFail(t *testing.T) {
+	c := &fakeCognito{}
+	h, err := New(Config{Cognito: c, Rotations: &fakeStore{err: errors.New("AccessDeniedException")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Handle(context.Background(), event(TriggerConfirmSignUp, "CONFIRMED")); err != nil || len(c.calls) != 1 {
+		t.Errorf("Handle() = %v with %d replacements, want nil and 1", err, len(c.calls))
 	}
 }
 
