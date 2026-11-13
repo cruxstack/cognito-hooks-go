@@ -21,7 +21,7 @@ Upgrade checklist:
   (`go build -tags lambda.norpc -o bootstrap .`) or download
   `bootstrap_linux_arm64.zip` or `bootstrap_linux_amd64.zip` from the
   release. `cmd/presignup` and `cmd/debug` were removed.
-- **Go 1.27.3 or later** is required to build.
+- **Go 1.27.4 or later** is required to build.
 
 ## Configuration
 
