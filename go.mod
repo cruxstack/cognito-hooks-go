@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider v1.75.7
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.72.3
 	github.com/joho/godotenv v1.5.1
-	github.com/open-policy-agent/opa v1.22.0
+	github.com/open-policy-agent/opa v1.22.2
 )
 
 require (
